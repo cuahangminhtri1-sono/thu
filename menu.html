@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="theme-color" content="#0d7a5f">
+<meta name="robots" content="noindex,nofollow">
+<title>Gọi món</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0}
+body{background:#eef3f1;color:#15302a;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:15px;line-height:1.5;padding-bottom:96px}
+button{font-family:inherit;cursor:pointer}
+:focus-visible{outline:3px solid #16a34a;outline-offset:2px}
+
+/* ── ĐẦU TRANG ── */
+#top{position:sticky;top:0;z-index:50;background:#0d7a5f;color:#fff;padding:calc(12px + env(safe-area-inset-top,0px)) 14px 12px;box-shadow:0 2px 12px rgba(8,40,30,.22)}
+#quan{font-size:18px;font-weight:800;line-height:1.3;margin:0 0 4px;word-break:break-word}
+#ban{display:inline-block;background:rgba(255,255,255,.18);border-radius:999px;padding:3px 12px;font-size:13px;font-weight:700}
+#tim{width:100%;margin-top:11px;border:none;border-radius:11px;padding:11px 13px;font-size:15px;font-family:inherit;background:#fff;color:#15302a}
+
+/* ── TRẠNG THÁI ── */
+#bao{padding:56px 26px;text-align:center;color:#43635b}
+#bao .ic{font-size:44px;line-height:1;margin-bottom:14px}
+#bao h2{font-size:17px;font-weight:800;color:#15302a;margin:0 0 8px}
+#bao p{margin:0 0 18px;font-size:14px;line-height:1.65}
+.btn-lai{border:none;background:#0d7a5f;color:#fff;border-radius:12px;padding:13px 26px;font-size:15px;font-weight:800}
+#offline{display:none;background:#fff3cd;color:#7a5c00;font-size:12.5px;padding:8px 14px;text-align:center;font-weight:700}
+
+/* ── THỰC ĐƠN ── */
+#ds{padding:12px 12px 4px}
+.nhom{font-size:12.5px;font-weight:800;color:#3f7a68;letter-spacing:.3px;margin:16px 4px 8px}
+.nhom:first-child{margin-top:4px}
+.mon{display:flex;align-items:center;gap:11px;background:#fff;border-radius:14px;padding:11px 12px;margin-bottom:8px}
+.mon-a{width:52px;height:52px;border-radius:10px;object-fit:cover;flex:none;background:#e4ece9}
+.mon-t{flex:1;min-width:0}
+.mon-t b{display:block;font-size:14.5px;font-weight:700;line-height:1.35;word-break:break-word}
+.mon-t span{display:block;font-size:14px;font-weight:800;color:#0d7a5f;margin-top:3px}
+.mon-t i{font-style:normal;font-size:11.5px;color:#8d9d97}
+.them{flex:none;border:none;background:#0d7a5f;color:#fff;width:40px;height:40px;border-radius:50%;font-size:23px;font-weight:700;line-height:1;display:flex;align-items:center;justify-content:center}
+.them:active{transform:scale(.92)}
+.dem{flex:none;display:flex;align-items:center;gap:9px}
+.dem button{border:none;background:#e6f2ee;color:#0d7a5f;width:34px;height:34px;border-radius:50%;font-size:19px;font-weight:800;line-height:1}
+.dem b{min-width:20px;text-align:center;font-size:16px;font-weight:800}
+.trong{text-align:center;color:#8d9d97;padding:30px 16px;font-size:14px}
+
+/* ── THANH GIỎ ── */
+#thanh{position:fixed;left:0;right:0;bottom:0;z-index:60;padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px));background:#eef3f1;box-shadow:0 -6px 20px rgba(8,40,30,.13);display:none}
+#thanh.on{display:block}
+#xem{width:100%;border:none;background:#0d7a5f;color:#fff;border-radius:14px;padding:15px 16px;font-size:15.5px;font-weight:800;display:flex;align-items:center;justify-content:space-between;gap:10px}
+#xem em{font-style:normal;background:rgba(255,255,255,.2);border-radius:999px;padding:2px 10px;font-size:13.5px}
+
+/* ── KHAY XÁC NHẬN ── */
+#khay{position:fixed;inset:0;z-index:80;background:rgba(8,26,20,.55);display:none;align-items:flex-end;justify-content:center}
+#khay.on{display:flex}
+#khay .sheet{width:100%;max-width:520px;background:#f5f8f7;border-radius:20px 20px 0 0;padding:12px 14px calc(16px + env(safe-area-inset-bottom,0px));max-height:92vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.grip{width:42px;height:4px;border-radius:4px;background:#cfdad6;margin:2px auto 12px}
+.sheet h3{font-size:16.5px;font-weight:800;margin:0 0 12px;padding:0 2px}
+.dong{background:#fff;border-radius:13px;padding:11px 12px;margin-bottom:8px}
+.dong-h{display:flex;align-items:center;gap:10px}
+.dong-h b{flex:1;min-width:0;font-size:14px;font-weight:700;word-break:break-word}
+.dong-h .gia{font-size:14px;font-weight:800;color:#0d7a5f;white-space:nowrap}
+.ghi{width:100%;margin-top:9px;border:1px solid #dce5e2;border-radius:9px;padding:8px 10px;font-size:13.5px;font-family:inherit;background:#fbfdfc}
+#tong{display:flex;align-items:center;justify-content:space-between;font-size:16px;font-weight:800;padding:12px 4px 4px}
+#tong b{font-size:21px;color:#c0392b}
+#note{width:100%;border:1px solid #dce5e2;border-radius:11px;padding:11px;font-size:14px;font-family:inherit;margin-bottom:9px;background:#fff}
+#gui{width:100%;border:none;background:#16a34a;color:#fff;border-radius:13px;padding:15px;font-size:16px;font-weight:800}
+#gui:disabled{background:#a9c3b8}
+#dong-khay{width:100%;border:none;background:#e6ebe9;color:#3c554e;border-radius:13px;padding:13px;font-size:14.5px;font-weight:800;margin-top:8px}
+.canh{background:#fff8e6;border:1px solid #f3d98d;border-radius:11px;padding:10px 12px;font-size:12.5px;color:#856300;line-height:1.6;margin-bottom:10px}
+
+/* ── ĐÃ GỬI ── */
+#xong{position:fixed;inset:0;z-index:90;background:#f5f8f7;display:none;flex-direction:column;align-items:center;justify-content:center;padding:30px 26px;text-align:center}
+#xong.on{display:flex}
+#xong .tick{width:76px;height:76px;border-radius:50%;background:#16a34a;color:#fff;font-size:40px;display:flex;align-items:center;justify-content:center;margin-bottom:20px}
+#xong h2{font-size:20px;font-weight:800;margin:0 0 10px}
+#xong p{margin:0 0 26px;font-size:14.5px;color:#4a6a61;line-height:1.65;max-width:300px}
+#xong button{border:none;background:#0d7a5f;color:#fff;border-radius:13px;padding:14px 30px;font-size:15.5px;font-weight:800}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<div id="top" style="display:none">
+  <h1 id="quan">&nbsp;</h1>
+  <span id="ban">&nbsp;</span>
+  <input id="tim" type="search" placeholder="Tìm món…" autocomplete="off" enterkeyhint="search">
+</div>
+<div id="offline">Đang dùng thực đơn đã lưu — mạng yếu</div>
+
+<div id="bao"><div class="ic">⏳</div><h2>Đang mở thực đơn…</h2><p>Chờ một chút nhé.</p></div>
+<div id="ds"></div>
+
+<div id="thanh">
+  <button id="xem" type="button">
+    <span>Xem giỏ &amp; gửi bếp</span>
+    <em id="xem-sl">0 món</em>
+    <span id="xem-tien">0đ</span>
+  </button>
+</div>
+
+<div id="khay">
+  <div class="sheet">
+    <div class="grip"></div>
+    <h3>Đơn của bạn</h3>
+    <div class="canh">Gửi xong, nhân viên sẽ ra xác nhận rồi mới tính vào hoá đơn bàn.</div>
+    <div id="gio"></div>
+    <div id="tong"><span>Tạm tính</span><b>0đ</b></div>
+    <input id="note" type="text" maxlength="300" placeholder="Ghi chú cho cả đơn (không cay, ít đá…)">
+    <button id="gui" type="button">Gửi bếp</button>
+    <button id="dong-khay" type="button">Gọi thêm món</button>
+  </div>
+</div>
+
+<div id="xong">
+  <div class="tick">✓</div>
+  <h2>Đã gửi bếp</h2>
+  <p id="xong-p">Nhân viên sẽ ra xác nhận đơn của bàn bạn trong ít phút.</p>
+  <button id="them-nua" type="button">Gọi thêm món</button>
+</div>
+
+<script type="module">
+import { initializeApp }
+  from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getAuth, signInAnonymously, onAuthStateChanged }
+  from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+import { getFirestore, doc, getDoc, collection, addDoc, serverTimestamp }
+  from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+/* ═════════ CẤU HÌNH ═════════ */
+const CFG = {
+  apiKey: "AIzaSyA_kjQ-CdASRkf50Glz3kQajlkD5qGWC4k",
+  authDomain: "so-no-cc57a.firebaseapp.com",
+  projectId: "so-no-cc57a",
+  storageBucket: "so-no-cc57a.firebasestorage.app",
+  messagingSenderId: "571694791559",
+  appId: "1:571694791559:web:8e409728a520e2d370b122"
+};
+const CHO_GUI_LAI = 15000;   // chặn bấm gửi liên tục (mili-giây)
+
+/* ═════════ TIỆN ÍCH ═════════ */
+const $  = s => document.querySelector(s);
+const esc = s => String(s==null?'':s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const vnd = n => (Number(n)||0).toLocaleString('vi-VN') + 'đ';
+const kdau = s => String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+  .replace(/đ/g,'d').replace(/Đ/g,'D').toLowerCase();
+function bao(ic, tieuDe, noiDung, choThuLai){
+  $('#top').style.display='none'; $('#ds').innerHTML=''; $('#thanh').classList.remove('on');
+  $('#bao').style.display='block';
+  $('#bao').innerHTML = '<div class="ic">'+ic+'</div><h2>'+esc(tieuDe)+'</h2><p>'+noiDung+'</p>'
+    + (choThuLai ? '<button class="btn-lai" type="button" id="thu-lai">Thử lại</button>' : '');
+  const b=$('#thu-lai'); if(b) b.onclick=()=>location.reload();
+}
+
+/* ═════════ ĐỌC ĐỊA CHỈ BÀN ═════════ */
+const P   = new URLSearchParams(location.search);
+const TK  = (P.get('t')||'').trim();
+const BAN = (P.get('b')||'').trim();
+const KGIO = 'qrgio_' + TK + '_' + BAN;
+const KMENU = 'qrmenu_' + TK;
+const KLAST = 'qrlast_' + TK + '_' + BAN;
+
+let SHOP=null, MENU=[], GIO=[], dangGui=false;
+const tenBan = () => String((SHOP && SHOP.ban && SHOP.ban[BAN]) || BAN);
+
+/* ═════════ GIỎ (giữ lại khi lỡ tắt trình duyệt) ═════════ */
+function napGio(){
+  try{ const v=JSON.parse(localStorage.getItem(KGIO)||'[]'); if(Array.isArray(v)) GIO=v; }catch(e){ GIO=[]; }
+}
+function luuGio(){ try{ localStorage.setItem(KGIO, JSON.stringify(GIO)); }catch(e){} }
+function slCua(id){ const l=GIO.find(x=>x.i===id); return l?l.q:0; }
+function tongTien(){ return GIO.reduce((s,x)=>s+(x.p||0)*(x.q||0),0); }
+function tongMon(){ return GIO.reduce((s,x)=>s+(x.q||0),0); }
+
+function themMon(id){
+  const m=MENU.find(x=>x.i===id); if(!m) return;
+  const l=GIO.find(x=>x.i===id);
+  if(l) l.q++; else GIO.push({i:m.i,n:m.n,p:Number(m.p)||0,u:m.u||'',q:1,g:''});
+  luuGio(); ve(); veThanh();
+}
+function botMon(id){
+  const k=GIO.findIndex(x=>x.i===id); if(k<0) return;
+  GIO[k].q--; if(GIO[k].q<=0) GIO.splice(k,1);
+  luuGio(); ve(); veThanh(); if($('#khay').classList.contains('on')) veGio();
+}
+
+/* ═════════ VẼ THỰC ĐƠN ═════════ */
+function ve(){
+  const tu = kdau(($('#tim').value||'').trim());
+  const ds = tu ? MENU.filter(m=>kdau(m.n).includes(tu)) : MENU;
+  if(!ds.length){
+    $('#ds').innerHTML = '<div class="trong">'+(MENU.length?'Không có món nào khớp.':'Quán chưa đưa món nào lên thực đơn.')+'</div>';
+    return;
+  }
+  const nhom=[]; const theo={};
+  ds.forEach(m=>{ const g=m.c||'Món khác'; if(!theo[g]){theo[g]=[];nhom.push(g);} theo[g].push(m); });
+  let h='';
+  nhom.forEach(g=>{
+    h += '<div class="nhom">'+esc(g)+'</div>';
+    theo[g].forEach(m=>{
+      const q=slCua(m.i);
+      h += '<div class="mon">'
+         + (m.a ? '<img class="mon-a" src="'+esc(m.a)+'" alt="" loading="lazy" onerror="this.remove()">' : '')
+         + '<div class="mon-t"><b>'+esc(m.n)+'</b><span>'+vnd(m.p)
+         + (m.u ? ' <i>/ '+esc(m.u)+'</i>' : '') + '</span></div>'
+         + (q>0
+             ? '<div class="dem"><button type="button" data-bot="'+esc(m.i)+'" aria-label="Bớt">−</button><b>'+q+'</b><button type="button" data-them="'+esc(m.i)+'" aria-label="Thêm">+</button></div>'
+             : '<button class="them" type="button" data-them="'+esc(m.i)+'" aria-label="Thêm '+esc(m.n)+'">+</button>')
+         + '</div>';
+    });
+  });
+  $('#ds').innerHTML = h;
+}
+function veThanh(){
+  const n=tongMon();
+  $('#thanh').classList.toggle('on', n>0);
+  $('#xem-sl').textContent = n + ' món';
+  $('#xem-tien').textContent = vnd(tongTien());
+}
+function veGio(){
+  if(!GIO.length){ dongKhay(); return; }
+  $('#gio').innerHTML = GIO.map(l =>
+      '<div class="dong"><div class="dong-h">'
+    + '<b>'+esc(l.n)+'</b>'
+    + '<div class="dem"><button type="button" data-bot="'+esc(l.i)+'">−</button><b>'+l.q+'</b><button type="button" data-them="'+esc(l.i)+'">+</button></div>'
+    + '<span class="gia">'+vnd((l.p||0)*(l.q||0))+'</span></div>'
+    + '<input class="ghi" type="text" maxlength="80" placeholder="Ghi chú món này…" data-ghi="'+esc(l.i)+'" value="'+esc(l.g||'')+'">'
+    + '</div>').join('');
+  $('#tong b').textContent = vnd(tongTien());
+}
+function moKhay(){ veGio(); $('#khay').classList.add('on'); }
+function dongKhay(){ $('#khay').classList.remove('on'); }
+
+/* ═════════ BẤM ═════════ */
+document.addEventListener('click', e=>{
+  const t=e.target.closest('[data-them],[data-bot]'); if(!t) return;
+  if(t.dataset.them) themMon(t.dataset.them); else botMon(t.dataset.bot);
+});
+document.addEventListener('input', e=>{
+  const t=e.target.closest('[data-ghi]'); if(!t) return;
+  const l=GIO.find(x=>x.i===t.dataset.ghi); if(l){ l.g=t.value.slice(0,80); luuGio(); }
+});
+$('#tim').addEventListener('input', ve);
+$('#xem').onclick = moKhay;
+$('#dong-khay').onclick = dongKhay;
+$('#khay').onclick = e=>{ if(e.target.id==='khay') dongKhay(); };
+$('#them-nua').onclick = ()=>{ $('#xong').classList.remove('on'); };
+
+/* ═════════ KHỞI ĐỘNG ═════════ */
+let db=null, auth=null;
+
+async function chay(){
+  if(!TK || !BAN){
+    bao('🔎','Mã bàn chưa đúng','Bạn thử quét lại mã dán trên bàn, hoặc gọi nhân viên giúp một tay.');
+    return;
+  }
+  napGio();
+
+  let app;
+  try{
+    app  = initializeApp(CFG);
+    db   = getFirestore(app);
+    auth = getAuth(app);
+  }catch(e){
+    bao('📶','Chưa mở được thực đơn','Mạng đang chập chờn. Bạn bấm thử lại giúp nhé.', true);
+    return;
+  }
+
+  /* Đăng nhập vô danh — khách không phải tạo tài khoản gì cả */
+  try{ await signInAnonymously(auth); }
+  catch(e){
+    bao('📶','Chưa mở được thực đơn','Mạng đang chập chờn. Bạn bấm thử lại giúp nhé.', true);
+    return;
+  }
+
+  /* Đọc thực đơn — chỉ 1 lượt đọc */
+  let d=null;
+  try{
+    const s = await getDoc(doc(db,'shares_qr',TK));
+    if(s.exists()) d = s.data();
+  }catch(e){ d=null; }
+
+  if(!d){
+    /* Rớt mạng: dùng thực đơn đã lưu lần trước cho khách xem tạm */
+    let cache=null;
+    try{ cache=JSON.parse(localStorage.getItem(KMENU)||'null'); }catch(e){}
+    if(cache && Array.isArray(cache.menu) && cache.menu.length){
+      d = cache; $('#offline').style.display='block';
+    }else{
+      bao('🍽️','Quán chưa mở đặt món qua mã này','Bạn gọi nhân viên gọi món giúp nhé.', true);
+      return;
+    }
+  }else{
+    try{ localStorage.setItem(KMENU, JSON.stringify({quan:d.quan,ownerUid:d.ownerUid,chiNhanh:d.chiNhanh,ban:d.ban||null,menu:d.menu||[]})); }catch(e){}
+  }
+
+  if(d.nhanDon === false){
+    bao('🕘','Quán tạm ngưng nhận đơn qua mã QR','Bạn gọi nhân viên gọi món giúp nhé.', true);
+    return;
+  }
+
+  if(d.ban && typeof d.ban === 'object' && !(BAN in d.ban)){
+    bao('🔎','Mã bàn chưa đúng','Bàn này không còn trong sơ đồ của quán. Bạn gọi nhân viên giúp một tay nhé.');
+    return;
+  }
+
+  SHOP = d;
+  MENU = (Array.isArray(d.menu)?d.menu:[]).filter(m=>m && m.i && m.n);
+  /* Món đã bỏ khỏi thực đơn thì cũng bỏ khỏi giỏ cũ */
+  GIO = GIO.filter(l=>MENU.some(m=>m.i===l.i)); luuGio();
+
+  $('#bao').style.display='none';
+  $('#top').style.display='block';
+  $('#quan').textContent = d.quan || 'Thực đơn';
+  $('#ban').textContent  = 'Bàn ' + tenBan();
+  ve(); veThanh();
+}
+
+/* ═════════ GỬI ĐƠN ═════════ */
+$('#gui').onclick = async ()=>{
+  if(dangGui || !GIO.length) return;
+
+  let truoc=0; try{ truoc=Number(localStorage.getItem(KLAST))||0; }catch(e){}
+  const con = CHO_GUI_LAI - (Date.now()-truoc);
+  if(con > 0){
+    alert('Đơn vừa gửi xong rồi. Chờ ' + Math.ceil(con/1000) + ' giây nữa hãy gửi tiếp nhé.');
+    return;
+  }
+
+  dangGui = true;
+  $('#gui').disabled = true;
+  $('#gui').textContent = 'Đang gửi…';
+
+  const don = {
+    token:    TK,
+    ownerUid: String(SHOP.ownerUid||''),
+    chiNhanh: String(SHOP.chiNhanh||'main'),
+    banId:    BAN,
+    banTen:   tenBan().slice(0,60),
+    items:    GIO.slice(0,40).map(l=>({
+                i:String(l.i), n:String(l.n).slice(0,80),
+                p:Number(l.p)||0, q:Number(l.q)||1,
+                u:String(l.u||'').slice(0,20), g:String(l.g||'').slice(0,80)
+              })),
+    tong:     tongTien(),
+    ghiChu:   String($('#note').value||'').slice(0,300),
+    khach:    '',
+    tt:       'cho',
+    taoLuc:   serverTimestamp(),
+    tsClient: Date.now()
+  };
+
+  try{
+    await addDoc(collection(db,'qr_don'), don);
+    try{ localStorage.setItem(KLAST, String(Date.now())); }catch(e){}
+    GIO=[]; luuGio(); $('#note').value='';
+    ve(); veThanh(); dongKhay();
+    $('#xong-p').textContent = 'Nhân viên sẽ ra xác nhận đơn của bàn ' + tenBan() + ' trong ít phút.';
+    $('#xong').classList.add('on');
+  }catch(e){
+    const ma = (e && e.code) || '';
+    if(ma === 'permission-denied'){
+      alert('Quán đang tạm ngưng nhận đơn qua mã QR. Bạn gọi nhân viên gọi món giúp nhé.');
+    }else{
+      alert('Chưa gửi được — mạng đang chập chờn. Giỏ hàng vẫn còn nguyên, bạn bấm gửi lại nhé.');
+    }
+  }finally{
+    dangGui = false;
+    $('#gui').disabled = false;
+    $('#gui').textContent = 'Gửi bếp';
+  }
+};
+
+chay();
+</script>
+</body>
+</html>
