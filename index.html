@@ -17002,7 +17002,10 @@ M.css('qrd-print','\
 #pos-screen #sk-print.qrd-in{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:12px;color:#000}\
 #pos-screen #sk-print.qrd-in.k58{width:58mm;padding:2mm}\
 #pos-screen #sk-print.qrd-in.k80{width:80mm;padding:3mm}\
-#pos-screen #sk-print.qrd-in.kA4{position:fixed;left:0;top:0;width:297mm;height:210mm;box-sizing:border-box;padding:8mm;display:grid;grid-template-columns:1fr 1fr;gap:6mm;align-content:start}#pos-screen #sk-print.qrd-in.kA5{position:fixed;left:0;top:0;width:148mm;height:210mm;box-sizing:border-box;padding:8mm;display:grid;grid-template-columns:1fr 1fr;gap:4mm;align-content:start}\
+#pos-screen.qrd-printing{display:block!important;position:static!important;width:100%!important;height:auto!important;min-height:0!important;background:#fff!important}\
+ #pos-screen.qrd-printing> :not(#sk-print){display:none!important}\
+ #pos-screen #sk-print.qrd-in.kA4{position:static;width:auto;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:6mm;align-content:start}\
+ #pos-screen #sk-print.qrd-in.kA5{position:static;width:148mm;padding:8mm;box-sizing:border-box;display:grid;grid-template-columns:1fr 1fr;gap:4mm;align-content:start}\
 #pos-screen #sk-print.qrd-in .qc{text-align:center;page-break-inside:avoid;break-inside:avoid}\
 #pos-screen #sk-print.qrd-in.k58 .qc,#pos-screen #sk-print.qrd-in.k80 .qc{page-break-after:always;padding:3mm 0 5mm}\
 #pos-screen #sk-print.qrd-in.k58 .qc:last-child,#pos-screen #sk-print.qrd-in.k80 .qc:last-child{page-break-after:auto}\
@@ -17341,9 +17344,11 @@ async function inMa(kieu){
   /* @page chỉ gắn lúc in mã QR rồi gỡ ngay — để không đụng tới lệnh in
      hoá đơn / tem của app sau đó. */
   var ps=null;
+  var pos = document.getElementById('pos-screen');
+  if(pos) pos.classList.add('qrd-printing');
   if(kieu==='to'){
     ps=document.createElement('style'); ps.id='qrd-page';
-    ps.textContent='@page{size:'+(khoTo()==='A5'?'148mm 210mm':'297mm 210mm')+';margin:0}';
+    ps.textContent=(khoTo()==='A5'?'@page{size:148mm 210mm;margin:0}':'@page{size:'+khoTo()+';margin:8mm}');
     document.head.appendChild(ps);
   }
 
@@ -17361,6 +17366,7 @@ async function inMa(kieu){
     try{ window.print(); }catch(e){}
     setTimeout(function(){
       pr.className = luuClass; pr.innerHTML = luuHTML;
+      if(pos) pos.classList.remove('qrd-printing');
       if(ps) ps.remove();
     }, 800);
   }, 120);
