@@ -17343,7 +17343,7 @@ async function inMa(kieu){
   var ps=null;
   if(kieu==='to'){
     ps=document.createElement('style'); ps.id='qrd-page';
-    ps.textContent='@page{size:'+khoTo()+' portrait;margin:0}';
+    ps.textContent='@page{size:'+(khoTo()==='A5'?'148mm 210mm':'297mm 210mm')+';margin:0}';
     document.head.appendChild(ps);
   }
 
