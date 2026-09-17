@@ -8613,6 +8613,7 @@ var M=window.SKMOD,C=M.core,F=M.fb;
 if(!M.reg('fnb',{ns:'fnb',name:'F&B — Bàn & Định lượng',ver:'1.0',flag:'fnb'}))return;
 
 var ON=false,TB=[],CUR=null,UNSUB=null;
+var BASE='[]';   /* [QR] ảnh chụp giỏ của bàn đang phục vụ mà MÁY NÀY đã biết — dùng để so ra phần khách gọi thêm */
 
 /* ---------- TIỆN ÍCH ---------- */
 function tcol(){return C.col('pos_tables');}
@@ -8672,26 +8673,81 @@ function bar(){
   b.innerHTML='🍽️ Đang phục vụ: '+C.esc(t.name||'')+'<button data-act="fnb-hold">💾 Giữ bàn</button>';
 }
 
+/* ═══ [QR] ĐỒNG BỘ MÓN KHÁCH GỌI THÊM VÀO GIỎ ĐANG PHỤC VỤ ═══
+   Bàn đang mở trên máy này giữ giỏ trong BỘ NHỚ. Khi nhân viên bấm "Nhận vào
+   bàn" một đơn QR mới (máy này hoặc máy khác), món chỉ được ghi vào bản trên
+   Firestore — giỏ trong bộ nhớ KHÔNG hề biết ⇒ thanh toán THIẾU TIỀN và món bị
+   xoá mất lúc đóng bàn. Ở đây so bản trên Firestore với bản máy này ĐÃ BIẾT
+   (BASE), rồi CHỈ CỘNG THÊM phần chênh vào giỏ — không bao giờ xoá hay sửa món
+   nhân viên vừa bấm tay. */
+function ckey(l){return (l&&l.key)||(((l&&l.id)||'')+'|'+((l&&l.unit)||''));}
+function gop(c){var m={},i,k;for(i=0;i<(c||[]).length;i++){k=ckey(c[i]);
+  if(!m[k])m[k]={l:c[i],q:0};m[k].q=Math.round((m[k].q+(Number(c[i].qty)||0))*1e6)/1e6;}return m;}
+function chenhLech(goc,sv){                                                  /* phần bản Firestore CÓ THÊM so với bản đã biết */
+  var a,b,k,d,r=[],nl;
+  try{a=gop(typeof goc==='string'?JSON.parse(goc||'[]'):(goc||[]));}catch(e){a={};}
+  b=gop(Array.isArray(sv)?sv:[]);
+  for(k in b){
+    d=Math.round((b[k].q-((a[k]&&a[k].q)||0))*1e6)/1e6;
+    if(!(d>0))continue;
+    nl=JSON.parse(JSON.stringify(b[k].l));nl.key=k;nl.qty=d;
+    nl.baseQty=Math.round(d*(Number(nl.ratio)||1)*1e6)/1e6;
+    r.push(nl);
+  }
+  return r;
+}
+function dongBo(t){
+  if(!CUR||!t||t.id!==CUR)return;
+  var sv=Array.isArray(t.cart)?t.cart:[];
+  var them=chenhLech(BASE,sv);
+  BASE=JSON.stringify(sv);
+  if(!them.length)return;
+  var c=C.cart().slice(),i,j,line,sl=0;
+  for(i=0;i<them.length;i++){
+    line=null;
+    for(j=0;j<c.length;j++)if(ckey(c[j])===them[i].key){line=c[j];break;}
+    if(line){line.qty=Math.round(((Number(line.qty)||0)+them[i].qty)*1e6)/1e6;
+             line.baseQty=Math.round(line.qty*(Number(line.ratio)||1)*1e6)/1e6;}
+    else c.push(them[i]);
+    sl=Math.round((sl+them[i].qty)*1e6)/1e6;
+  }
+  C.setCart(c);
+  try{C.toast('➕ Bàn '+(t.name||'')+' gọi thêm — đã cộng '+C.n(sl)+' món vào giỏ');}catch(e){}
+}
+
 /* ---------- MỞ / GIỮ BÀN ---------- */
 function open_(id){
   var t=TB.filter(function(x){return x.id===id;})[0];if(!t)return;
   if(CUR&&CUR!==id){C.toast('Bấm “Giữ bàn” trước khi đổi bàn');return;}
-  if(CUR===id){M.go('sell');bar();return;}                                   /* bấm lại CHÍNH bàn đang phục vụ: KHÔNG nạp lại giỏ (kẻo mất món vừa gọi) */
+  if(CUR===id){dongBo(t);M.go('sell');bar();return;}                                   /* bấm lại CHÍNH bàn đang phục vụ: KHÔNG nạp lại giỏ (kẻo mất món vừa gọi) */
   if(C.cart().length&&!confirm('Giỏ đang có hàng chưa thanh toán.\nMở bàn sẽ THAY giỏ hiện tại. Tiếp tục?'))return;
   CUR=id;
   C.setCart(JSON.parse(JSON.stringify(t.cart||[])));
+  BASE=JSON.stringify(t.cart||[]);                                         /* [QR] mốc so sánh: từ đây về sau món mới trên Firestore = khách gọi thêm */
   if(!t.openAt){t.openAt=Date.now();F.updateDoc(tdoc(id),{openAt:t.openAt})['catch'](function(){});}
   M.go('sell');bar();render();
 }
 async function hold(){
   if(!CUR)return;
   var c=C.cart();
-  try{await F.updateDoc(tdoc(CUR),{cart:JSON.parse(JSON.stringify(c)),savedAt:F.serverTimestamp()});}
-  catch(e){C.err(e,'Giữ bàn');return;}
-  C.setCart([]);CUR=null;bar();M.go('fnb');C.toast('✅ Đã giữ bàn');
+  var sao=JSON.parse(JSON.stringify(c)),cu=BASE;
+  BASE=JSON.stringify(sao);                                                  /* [QR] đặt mốc TRƯỚC khi ghi: bản ghi vọng về không bị cộng trùng */
+  try{await F.updateDoc(tdoc(CUR),{cart:sao,savedAt:F.serverTimestamp()});}
+  catch(e){BASE=cu;C.err(e,'Giữ bàn');return;}
+  C.setCart([]);CUR=null;BASE='[]';bar();M.go('fnb');C.toast('✅ Đã giữ bàn');
 }
-async function clearTable(id){
-  try{await F.updateDoc(tdoc(id),{cart:[],openAt:null});}catch(e){}
+async function clearTable(id,goc){
+  /* [QR] Đóng bàn sau khi thanh toán. Nếu ngay lúc bấm tính tiền có đơn QR vừa
+     được nhận vào bàn mà giỏ chưa kịp nhận, phần đó CHƯA được tính tiền ⇒ giữ
+     lại trên bàn, tuyệt đối không xoá trắng làm mất món của khách. */
+  var con=[];
+  try{if(typeof goc==='string'){var s=await F.getDoc(tdoc(id));con=chenhLech(goc,(s.exists()?(s.data()||{}):{}).cart);}}catch(e){con=[];}
+  try{
+    if(con.length){
+      await F.updateDoc(tdoc(id),{cart:con,openAt:Date.now()});
+      try{C.toast('⚠️ Bàn còn '+con.length+' món khách gọi thêm CHƯA tính tiền — đã giữ lại trên bàn');}catch(_){}
+    }else await F.updateDoc(tdoc(id),{cart:[],openAt:null});
+  }catch(e){}
 }
 
 /* ---------- QUẢN LÝ BÀN ---------- */
@@ -8831,11 +8887,12 @@ function nghe(){
   var cn=(C.branch&&C.branch())||'main';
   if(cn===SUBCN&&(UNSUB||SUBLOI))return;
   if(UNSUB){try{UNSUB();}catch(e){}UNSUB=null;}
-  if(CUR){CUR=null;bar();}          /* bàn đang phục vụ thuộc chi nhánh cũ → bỏ, tránh ghi nhầm */
+  if(CUR){CUR=null;BASE='[]';bar();}          /* bàn đang phục vụ thuộc chi nhánh cũ → bỏ, tránh ghi nhầm */
   SUBCN=cn;SUBLOI=false;TB=[];render();
   try{
     UNSUB=F.onSnapshot(tcol(),function(s){
       TB=s.docs.map(function(d){var o=d.data()||{};o.id=d.id;return o;});
+      if(CUR){var _t=TB.filter(function(x){return x.id===CUR;})[0];if(_t)dongBo(_t);}   /* [QR] món khách gọi thêm vừa nhận vào bàn → cộng ngay vào giỏ đang phục vụ */
       render();bar();
     },function(e){console.error('[fnb] mất kết nối sơ đồ bàn',e);UNSUB=null;SUBLOI=true;
       try{C.toast('⚠️ Mất kết nối sơ đồ bàn — đổi chi nhánh rồi quay lại để tải lại');}catch(_){}});
@@ -8861,7 +8918,7 @@ M.on('prod:form',function(c){
 M.on('order:saved',async function(c){
   if(!M.flag('fnb'))return;
   await bomDeduct(c.items);
-  if(CUR){var id=CUR;CUR=null;bar();await clearTable(id);}
+  if(CUR){var id=CUR,goc=BASE;CUR=null;BASE='[]';bar();await clearTable(id,goc);}
 });
 M.on('view:show',function(c){if(!M.flag('fnb'))return;nghe();if(c&&c.view==='sell')bar();});
 })();
@@ -11618,10 +11675,13 @@ import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, getDocs, serv
 <!-- ═══════════════ HẾT: LÁ CHẮN DỮ LIỆU ═══════════════ -->
 
 <!-- ═══════════════════════════════════════════════════════════════════════
-     🤖 TRỢ LÝ AI HƯỚNG DẪN SỬ DỤNG — KHỐI TỰ CHỨA, CHỈ THÊM, KHÔNG SỬA 1 DÒNG CŨ.
+     🤖 TRỢ LÝ AI HƯỚNG DẪN SỬ DỤNG — v2 (bản chi tiết cho người mới & người lớn tuổi)
+     • KHỐI TỰ CHỨA, CHỈ THÊM, KHÔNG SỬA 1 DÒNG NÀO CỦA CODE CŨ.
      • Namespace riêng: biến SNAI__, class/id đều bắt đầu "snai" → không đụng code cũ.
      • Chạy 100% ngoại tuyến (không cần mạng, không cần API key, không tốn phí).
      • Bọc try/catch toàn bộ: lỗi gì cũng KHÔNG ảnh hưởng app.
+     • v2 thêm: 🎓 Học từ đầu (khóa 14 bài) · 🔠 Chữ to 3 cỡ · 🔊 Đọc to thành tiếng
+                · nhóm 📱 Đơn QR · tổng cộng 155 mục hướng dẫn.
      • Dán NGUYÊN KHỐI ngay TRƯỚC  </body>.
      ═══════════════════════════════════════════════════════════════════════ -->
 <script>
@@ -11731,6 +11791,59 @@ var CSS=''
 +'@keyframes snaiT{0%,60%,100%{opacity:.35;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}'
 +'@media(min-width:560px){#snai-mask{align-items:center;}#snai-panel{border-radius:20px;height:84vh;}}';
 
+/* ═════ v2: THANH CÔNG CỤ · CỠ CHỮ · ĐỌC TO · HỌC TỪ ĐẦU ═════ */
+CSS+=''
++'#snai-tools{flex:0 0 auto;display:flex;gap:7px;padding:9px 12px 3px;background:#f2f5f4;'
++'overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:none;}'
++'#snai-tools::-webkit-scrollbar{display:none;}'
++'#snai-tools button{flex:0 0 auto;white-space:nowrap;background:#fff;border:1.5px solid #bcd9cb;'
++'color:#0a5f4a;border-radius:11px;padding:9px 12px;font-size:12.8px;font-weight:800;cursor:pointer;'
++'font-family:inherit;box-shadow:0 1px 4px rgba(20,45,35,.07);}'
++'#snai-tools button:active{background:#e4f0ea;}'
++'#snai-tools button.on{background:#0d7a5f;border-color:#0d7a5f;color:#fff;}'
++'#snai-tools button.big{background:#0d7a5f;border-color:#0d7a5f;color:#fff;}'
++'#snai-tools button.big:active{background:#0a5f4a;}'
+
++'.snai-say{display:inline-flex;align-items:center;gap:6px;margin-top:11px;background:#eef6f2;'
++'border:1.5px solid #bcd9cb;color:#0a5f4a;border-radius:10px;padding:8px 12px;font-size:12.8px;'
++'font-weight:800;cursor:pointer;font-family:inherit;}'
++'.snai-say:active{background:#dceee5;}'
+
++'.snai-les{display:inline-block;background:#0d7a5f;color:#fff;border-radius:999px;padding:4px 12px;'
++'font-size:11.5px;font-weight:900;letter-spacing:.4px;margin-bottom:9px;}'
++'.snai-next{display:block;width:100%;margin-top:12px;background:#0d7a5f;color:#fff;border:none;'
++'border-radius:12px;padding:13px 11px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;'
++'text-align:left;line-height:1.45;}'
++'.snai-next:active{background:#0a5f4a;}'
++'.snai-big{display:block;width:100%;margin-top:9px;background:#0d7a5f;color:#fff;border:none;'
++'border-radius:12px;padding:13px 11px;font-size:14.5px;font-weight:800;cursor:pointer;font-family:inherit;'
++'text-align:left;line-height:1.4;}'
++'.snai-big.alt{background:#fff;color:#0a5f4a;border:1.6px solid #bcd9cb;}'
++'.snai-big:active{opacity:.85;}'
+
+/* — CỠ CHỮ LỚN (cho người lớn tuổi) — */
++'#snai-panel.snai-f1 .snai-b{font-size:16.5px;line-height:1.72;}'
++'#snai-panel.snai-f1 .snai-b .snai-h{font-size:18px;}'
++'#snai-panel.snai-f1 .snai-b .snai-tip,#snai-panel.snai-f1 .snai-b .snai-warn,'
++'#snai-panel.snai-f1 .snai-b .snai-ok{font-size:15px;}'
++'#snai-panel.snai-f1 .snai-path,#snai-panel.snai-f1 .snai-b code{font-size:14.5px;}'
++'#snai-panel.snai-f1 .snai-sg,#snai-panel.snai-f1 .snai-cl button{font-size:15px;}'
++'#snai-panel.snai-f1 .snai-ch b{font-size:16px;}'
++'#snai-panel.snai-f1 #snai-in{font-size:16px;}'
++'#snai-panel.snai-f1 .snai-go,#snai-panel.snai-f1 .snai-next,#snai-panel.snai-f1 .snai-big{font-size:16px;}'
+
++'#snai-panel.snai-f2 .snai-b{font-size:19.5px;line-height:1.78;}'
++'#snai-panel.snai-f2 .snai-b .snai-h{font-size:21px;}'
++'#snai-panel.snai-f2 .snai-b .snai-tip,#snai-panel.snai-f2 .snai-b .snai-warn,'
++'#snai-panel.snai-f2 .snai-b .snai-ok{font-size:17.5px;}'
++'#snai-panel.snai-f2 .snai-path,#snai-panel.snai-f2 .snai-b code{font-size:17px;}'
++'#snai-panel.snai-f2 .snai-sg,#snai-panel.snai-f2 .snai-cl button{font-size:17.5px;}'
++'#snai-panel.snai-f2 .snai-ch b{font-size:18px;}'
++'#snai-panel.snai-f2 #snai-in{font-size:18px;}'
++'#snai-panel.snai-f2 .snai-b{max-width:96%;}'
++'#snai-panel.snai-f2 .snai-go,#snai-panel.snai-f2 .snai-next,#snai-panel.snai-f2 .snai-big{font-size:18px;}'
++'#snai-panel.snai-f2 .snai-b li{margin-bottom:9px;}';
+
 /* ═════════════ 2) KHO TRI THỨC — VIẾT TỪ CHÍNH CODE CỦA APP ═════════════ */
 var CAT={
  bd :{i:'🚀',n:'Bắt đầu & Tài khoản'},
@@ -11741,6 +11854,7 @@ var CAT={
  cv :{i:'🧠',n:'Cố vấn kinh doanh (AI)'},
  nv :{i:'👥',n:'Nhân viên & Phân quyền'},
  cn :{i:'🏪',n:'Cửa hàng & Ngành nghề'},
+ qr :{i:'📱',n:'Đơn QR — Khách tự gọi món'},
  sl :{i:'💾',n:'Sao lưu & Phục hồi'},
  inn:{i:'🖨️',n:'In ấn & Chia sẻ'},
  loi:{i:'🆘',n:'Sự cố thường gặp'}
@@ -14249,7 +14363,693 @@ a:`<b class="snai-h">🆘 Sự cố ở mục Cố vấn</b>
 <li>Ngoài ra, <b>chưa bấm Quét sâu thì Cố vấn chưa trừ hàng khách trả lại</b> — nên số có thể cao hơn Báo cáo.</li>
 </ul>
 <b>👉 Kết luận: cần con số chính xác để đối chiếu tiền thì xem tab Báo cáo. Cần lời khuyên nên làm gì thì xem Cố vấn.</b>
-<div class="snai-ok">✅ <b>Yên tâm tuyệt đối:</b> Cố vấn chỉ <b>ĐỌC</b> số liệu để phân tích. Nó <b>không tự sửa đơn</b>, <b>không tự bán</b>, <b>không xóa gì cả</b>. Cứ dùng thoải mái, không sợ hỏng dữ liệu.</div>`}
+<div class="snai-ok">✅ <b>Yên tâm tuyệt đối:</b> Cố vấn chỉ <b>ĐỌC</b> số liệu để phân tích. Nó <b>không tự sửa đơn</b>, <b>không tự bán</b>, <b>không xóa gì cả</b>. Cứ dùng thoải mái, không sợ hỏng dữ liệu.</div>`},
+
+/* ═════════ BỔ SUNG v2 — 🚀 BẮT ĐẦU & TÀI KHOẢN ═════════ */
+{c:'bd',t:'Cách dùng chính Trợ lý này (chữ to · đọc to · học từ đầu)',k:'tro ly huong dan cach dung chu to phong to doc to loa nghe hoc tu dau khoa hoc',
+a:`<b class="snai-h">🤖 Dùng Trợ lý cho dễ</b>
+<b>👉 Trợ lý là ai:</b> là <b>quyển sách hướng dẫn biết nói</b> nằm sẵn trong app. Bấm nút tròn <b>🤖 TRỢ LÝ</b> ở góc dưới bên phải màn hình là mở ra.
+<b>🧰 Trong bảng Trợ lý có 4 thứ, nhìn từ trên xuống:</b>
+<ol>
+<li><span class="snai-path">🎓 Học từ đầu</span> — <b>người mới bấm cái này</b>. Máy sẽ dạy từng bài, hết bài này bấm <b>Bài tiếp theo</b> là qua bài kế, không sợ lạc.</li>
+<li><span class="snai-path">📚 Mục lục</span> — xem <b>toàn bộ</b> mục hướng dẫn xếp theo nhóm. Chạm vào tên nhóm là xổ danh sách ra.</li>
+<li><span class="snai-path">🔊 Đọc to</span> — bật lên thì máy <b>đọc thành tiếng</b> câu trả lời cho bạn nghe. Ai mắt kém, ngại đọc chữ thì bật cái này.</li>
+<li><span class="snai-path">🔠 Cỡ chữ</span> — nút chữ <b>A</b> ở góc trên bên phải. Bấm một lần chữ to lên, bấm tiếp <b>to nữa</b>, bấm lần nữa quay về cỡ thường.</li>
+</ol>
+<b>💬 Hoặc cứ gõ câu hỏi bằng lời nói thường</b> vào ô trống dưới cùng rồi bấm nút <b>➤</b>. Ví dụ gõ: <i>ghi no cho khach</i> · <i>in bang ke</i> · <i>quen pin</i>.
+<div class="snai-ok">✅ <b>Gõ có dấu hay không dấu đều được</b>, gõ sai chính tả một hai chữ vẫn tìm ra. Không cần gõ dài, chỉ vài từ chính là đủ.</div>
+<div class="snai-tip">💡 Trợ lý chạy <b>ngay trong máy bạn</b> — không cần mạng, không tốn tiền, không gửi dữ liệu của bạn đi đâu cả. Hỏi bao nhiêu lần cũng được.</div>`},
+
+{c:'bd',t:'Gọi hỗ trợ khi bí — số hotline',k:'ho tro hotline lien he goi dien so dien thoai chu phan mem giup do bi loi khong biet lam',
+a:`<b class="snai-h">📞 Gọi người hỗ trợ</b>
+<b>👉 Khi nào nên gọi:</b> khi bạn đã thử theo hướng dẫn mà <b>vẫn không được</b>, hoặc gặp chuyện liên quan tới <b>tiền bạc, mất dữ liệu, tài khoản bị khóa</b> — đừng ngại, gọi liền cho chắc.
+<b>📍 Số hotline nằm ở 3 chỗ, chỗ nào cũng gọi được:</b>
+<ol>
+<li>Trong bảng <span class="snai-path">⚙️ Cài đặt</span> → mục <b>🏦 Số tài khoản</b>, nhìn xuống dưới cùng có dòng <b>📞 Gọi 0977 823 979</b>.</li>
+<li>Trong bảng <span class="snai-path">💳 Gia hạn tài khoản</span>, cũng ở dưới cùng.</li>
+<li>Trong bảng mua <b>gói ngành nghề</b> có nút <b>📞 Gọi hotline hỗ trợ</b>.</li>
+</ol>
+<b>🗣️ Gọi thì nói sẵn 3 thứ này cho nhanh việc:</b>
+<ul>
+<li><b>Email</b> bạn đang đăng nhập app (quan trọng nhất — nhờ nó mới tìm ra tài khoản của bạn).</li>
+<li>Bạn <b>đang bấm ở màn hình nào</b>, bấm nút gì thì bị.</li>
+<li>Máy <b>báo dòng chữ gì</b> — nếu được thì chụp màn hình gửi qua Zalo.</li>
+</ul>
+<div class="snai-tip">📸 <b>Mẹo nhanh nhất:</b> chụp màn hình lúc đang lỗi rồi gửi Zalo kèm một câu ngắn "em bấm cái này thì nó ra vầy". Nhìn ảnh là biết liền, khỏi mô tả dài dòng.</div>
+<div class="snai-ok">✅ Dữ liệu của bạn nằm trên máy chủ, <b>không mất đi đâu</b> trong lúc chờ hỗ trợ. Cứ bình tĩnh.</div>`},
+
+{c:'bd',t:'Xem app đang chạy bản nào (phiên bản)',k:'phien ban version build cap nhat ban moi may cu chua cap nhat',
+a:`<b class="snai-h">🔢 Xem số phiên bản</b>
+<b>👉 Để làm gì:</b> khi người hỗ trợ hỏi "máy anh/chị đang chạy bản nào", hoặc khi bạn nghi <b>máy chưa nhận bản mới</b> nên thiếu nút, thiếu chức năng.
+<b>🪜 Xem ở đâu:</b>
+<ol>
+<li>Bấm <span class="snai-path">⚙️ Cài đặt</span> trên thanh xanh đầu màn hình.</li>
+<li>Chọn dòng <b>🏦 Số tài khoản</b>.</li>
+<li>Kéo xuống <b>dưới cùng</b> của bảng đó. Có một dòng chữ nhỏ màu xám: <b>Phiên bản: …</b> kèm ngày tháng.</li>
+</ol>
+<b>🔄 Nếu nghi máy đang chạy bản cũ:</b>
+<ol>
+<li>Đóng hẳn app (vuốt tắt khỏi danh sách app đang chạy), <b>chờ 5 giây</b> rồi mở lại.</li>
+<li>Vẫn chưa đổi thì tắt mở lại thêm <b>một lần nữa</b> — bản mới thường về ở lần mở thứ hai.</li>
+<li>Vẫn không được: kiểm tra <b>có mạng</b> chưa, rồi mở lại.</li>
+</ol>
+<div class="snai-tip">💡 App tự cập nhật, bạn <b>không phải vào chợ ứng dụng tải lại</b>. Chỉ cần có mạng và mở app vài lần là bản mới tự về.</div>
+<div class="snai-ok">✅ Cập nhật <b>không bao giờ làm mất dữ liệu</b> — khách hàng, công nợ, hàng hóa vẫn nguyên.</div>`},
+
+{c:'bd',t:'Đăng xuất — khi nào nên và không nên',k:'dang xuat logout thoat tai khoan bam nham mat du lieu',
+a:`<b class="snai-h">🚪 Đăng xuất</b>
+<b>👉 Đăng xuất là gì:</b> là <b>đóng cửa</b> tài khoản của bạn trên cái máy đang cầm. Dữ liệu <b>vẫn nằm nguyên trên máy chủ</b>, không mất, nhưng muốn vào lại thì <b>phải gõ email + mật khẩu</b>.
+<b>✅ NÊN đăng xuất khi:</b>
+<ul>
+<li>Bạn <b>bán máy, cho, đổi máy</b> cho người khác.</li>
+<li>Bạn mượn máy người ta để xem sổ rồi trả lại.</li>
+<li>Bạn muốn <b>đổi sang tài khoản khác</b> (ví dụ chuyển từ máy Chủ sang tài khoản nhân viên).</li>
+</ul>
+<b>⛔ KHÔNG nên đăng xuất khi:</b>
+<ul>
+<li>Máy bạn dùng hằng ngày — đăng xuất rồi vào lại mỗi ngày rất phiền, lỡ quên mật khẩu là kẹt.</li>
+<li>Đang <b>mất mạng</b> mà máy còn <b>đơn chưa gửi lên máy chủ</b> — đăng xuất lúc này có thể mất mấy đơn đó. Chờ có mạng, thấy hết dòng "đang đồng bộ" rồi hãy đăng xuất.</li>
+</ul>
+<b>🪜 Cách đăng xuất:</b> bấm <span class="snai-path">⚙️ Cài đặt</span> → kéo xuống dòng <b>Đăng xuất</b> (dòng cuối cùng, chữ màu đỏ).
+<div class="snai-warn">⚠️ <b>Trước khi đăng xuất, hãy chắc bạn còn nhớ mật khẩu.</b> Nhiều người bấm đăng xuất theo thói quen rồi mới nhớ ra là quên mật khẩu — lúc đó phải nhờ chủ phần mềm đặt lại, mất thời gian.</div>`},
+
+{c:'bd',t:'Một tài khoản dùng được mấy máy cùng lúc?',k:'nhieu may cung luc dien thoai may tinh vo tay chong dung chung tai khoan dong bo',
+a:`<b class="snai-h">📱💻 Dùng nhiều máy cùng lúc</b>
+<b>👉 Trả lời ngắn:</b> <b>Được, không giới hạn số máy.</b> Điện thoại của bạn, điện thoại vợ/chồng, máy tính ở nhà, máy tính bảng ngoài quầy — đăng nhập <b>cùng một email</b> là tất cả thấy chung một sổ.
+<b>🪜 Làm sao thêm máy thứ hai:</b>
+<ol>
+<li>Trên máy mới, mở đúng <b>đường link app</b> mà bạn đang dùng.</li>
+<li>Gõ <b>đúng email và mật khẩu</b> đã đăng ký → bấm <b>Đăng nhập</b>.</li>
+<li>Chờ vài giây cho dữ liệu tải về là xong — <b>không phải nhập lại gì cả</b>.</li>
+</ol>
+<div class="snai-ok">✅ <b>Ghi ở máy này, máy kia thấy liền</b> (khi cả hai có mạng). Ghi nợ ngoài quầy bằng điện thoại thì ở nhà mở máy tính lên đã thấy rồi.</div>
+<div class="snai-warn">⚠️ <b>Đừng để nhân viên đăng nhập bằng tài khoản Chủ.</b> Ai cầm tài khoản Chủ là xóa được đơn, sửa được giá, xem được hết tiền lời. Muốn giao máy cho nhân viên thì tạo <b>tài khoản nhân viên riêng</b> — xem mục "Tài khoản đăng nhập riêng cho máy nhân viên".</div>
+<div class="snai-tip">💡 Hai máy cùng sửa <b>một khách</b> đúng cùng một giây thì máy nào bấm sau sẽ đè lên máy trước. Thực tế gần như không xảy ra, nhưng nếu hai người cùng ngồi nhập liệu thì chia nhau ra cho chắc.</div>`},
+
+{c:'bd',t:'Dữ liệu của tôi ai xem được? Có an toàn không?',k:'bao mat an toan du lieu ai xem duoc lo thong tin khach hang rieng tu',
+a:`<b class="snai-h">🔐 Ai xem được dữ liệu của bạn</b>
+<b>👉 Trả lời thẳng:</b> <b>Chỉ người biết email + mật khẩu của bạn</b> mới mở được sổ của bạn. Người khác dù có cùng đường link app cũng chỉ thấy <b>sổ của chính họ</b>, không thấy của bạn.
+<b>🧱 Dữ liệu nằm ở đâu:</b> nằm trên <b>máy chủ của Google (Firebase)</b> — cùng hệ thống mà rất nhiều ngân hàng và công ty lớn đang dùng. Không nằm trong máy bạn, nên <b>máy hư, mất máy, rớt nước cũng không mất sổ</b>.
+<b>👥 Những ai có thể thấy dữ liệu của bạn:</b>
+<ul>
+<li><b>Bạn</b> — người giữ email và mật khẩu.</li>
+<li><b>Nhân viên</b> mà bạn tự tay tạo tài khoản và đưa mật khẩu cho họ (và chỉ thấy đúng phần bạn cho phép).</li>
+<li><b>Khách hàng</b> — chỉ khi bạn <b>chủ động bấm Chia sẻ</b>, và họ chỉ thấy <b>đúng phần nợ của riêng họ</b>, không thấy khách khác, không thấy hàng hóa, không thấy tiền lời.</li>
+</ul>
+<div class="snai-ok">✅ <b>Tiền lời, giá vốn, doanh thu của bạn không ai ngoài thấy được.</b> Link chia sẻ cho khách chỉ hiện tên khách đó, các lần mua – trả và số nợ còn lại.</div>
+<div class="snai-warn">⚠️ <b>Chỗ hở duy nhất là mật khẩu.</b> Đừng đặt mật khẩu dễ đoán (123456, ngày sinh, số điện thoại), đừng đưa cho người ngoài, đừng ghi dán lên máy tính tiền. Nghi ai biết thì đổi ngay — xem mục "Đổi mật khẩu".</div>`},
+
+{c:'bd',t:'App tự báo lỗi về cho chủ phần mềm',k:'thu loi bao loi tu dong error log gui loi ve rieng tu co doc trom khong',
+a:`<b class="snai-h">🛠️ App tự gửi báo lỗi</b>
+<b>👉 Chuyện gì đang diễn ra:</b> khi app gặp trục trặc kỹ thuật, nó <b>tự ghi lại một dòng nhật ký lỗi</b> rồi gửi về cho chủ phần mềm, để sửa trước khi làm phiền bạn.
+<b>📋 Nó gửi gì:</b> chỉ gửi <b>thông tin kỹ thuật</b> — tên lỗi, chỗ nào trong app bị, loại máy, loại trình duyệt.
+<div class="snai-ok">✅ <b>Nó KHÔNG gửi</b>: tên khách hàng, số nợ, doanh thu, giá vốn, mật khẩu, hình ảnh của bạn. Không ai đọc được sổ sách của bạn qua đường này.</div>
+<b>🙂 Bạn phải làm gì:</b> <b>không phải làm gì cả</b>. Nó chạy lặng lẽ phía sau, không hiện lên màn hình, không làm chậm máy.
+<div class="snai-tip">💡 Nếu app cứ lặp đi lặp lại một lỗi khó chịu, bạn vẫn nên <b>gọi hotline</b> báo — nhờ vậy sửa nhanh hơn nhiều so với chờ đọc nhật ký.</div>`},
+
+/* ═════════ BỔ SUNG v2 — 📒 SỔ NỢ ═════════ */
+{c:'sn',t:'Xem lại ảnh giấy tờ đã đính kèm',k:'xem anh dinh kem hoa don giay no anh chuyen khoan mo file tep xem lai',
+a:`<b class="snai-h">📎 Mở lại ảnh đã đính kèm</b>
+<b>👉 Để làm gì:</b> lúc khách cãi "tôi đâu có nợ chừng đó", bạn mở ngay <b>tấm ảnh giấy nợ hoặc ảnh chuyển khoản</b> ra cho xem — khỏi tranh luận.
+<b>🪜 Làm từng bước:</b>
+<ol>
+<li>Ở màn hình <span class="snai-path">📒 SỔ NỢ</span>, bấm vào <b>tên khách</b> để mở bảng chi tiết.</li>
+<li>Kéo xuống phần <b>danh sách giao dịch</b> phía dưới.</li>
+<li>Giao dịch nào có kèm ảnh sẽ có <b>biểu tượng cái ghim 📎</b> hoặc dòng chữ tên tệp.</li>
+<li>Bấm vào <b>cái ghim / tên tệp</b> đó → ảnh mở to ra giữa màn hình.</li>
+<li>Xem xong bấm dấu <b>✕</b> ở góc trên bảng ảnh để đóng lại.</li>
+</ol>
+<div class="snai-tip">💡 Ảnh <b>không nằm trong điện thoại</b> mà nằm trên máy chủ, nên <b>lần đầu mở cần có mạng</b> và chờ 2–3 giây. Mất mạng thì sẽ không xem được ảnh, nhưng số tiền thì vẫn xem bình thường.</div>
+<b>🗑️ Muốn bỏ ảnh đã đính:</b> bấm vào <b>giao dịch đó</b> để sửa → ở ô tệp đính kèm bấm nút <b>xóa tệp</b> → bấm <b>Lưu</b>.
+<div class="snai-warn">⚠️ Xóa ảnh là <b>mất luôn</b>, không lấy lại được. Nếu ảnh đó là bằng chứng nợ thì đừng xóa.</div>`},
+
+{c:'sn',t:'Khách bấm vào link nợ thì thấy những gì?',k:'link chia se khach thay gi trang cong no cong khai qr ky ten xem no',
+a:`<b class="snai-h">👀 Khách thấy gì trong link nợ</b>
+<b>👉 Nhiều chủ shop ngại chia sẻ vì sợ lộ.</b> Yên tâm, khách <b>chỉ thấy đúng phần của họ</b>.
+<b>📄 Mở link ra, khách thấy đúng 4 thứ:</b>
+<ol>
+<li><b>Tên của họ</b> và số nợ còn lại, chữ to rõ ràng.</li>
+<li><b>Bảng kê từng lần</b>: ngày nào mua bao nhiêu, ngày nào trả bao nhiêu.</li>
+<li><b>Mã QR chuyển khoản</b> — nếu bạn đã điền số tài khoản trong ⚙️ Cài đặt. Khách quét là app ngân hàng tự điền sẵn số tiền và nội dung.</li>
+<li><b>Ô ký tên xác nhận</b> — khách ký bằng ngón tay ngay trên màn hình.</li>
+</ol>
+<div class="snai-ok">✅ <b>Khách KHÔNG thấy</b>: khách hàng khác, tổng công nợ của shop, hàng hóa trong kho, giá vốn, tiền lời. Tuyệt đối không.</div>
+<div class="snai-ok">✅ <b>Khách KHÔNG sửa được số nợ.</b> Trang đó chỉ để xem và ký, không có nút sửa.</div>
+<div class="snai-warn">⚠️ Ai cầm được link cũng mở xem được (không cần mật khẩu). Nên <b>gửi riêng cho đúng người</b>, đừng đăng lên nhóm chung, đừng đăng Facebook.</div>
+<div class="snai-tip">💡 Khách nói "mở không được": đa số là do bấm link trong Zalo bị chặn. Bảo khách <b>bấm giữ vào link → chọn Mở bằng trình duyệt / Chrome</b> là vào được.</div>`},
+
+{c:'sn',t:'Nhắc nợ nhanh qua Zalo / SMS',k:'nhac no gui tin nhan zalo sms doi no nut nhac danh sach nhac',
+a:`<b class="snai-h">📤 Nhắc nợ bằng một nút bấm</b>
+<b>👉 Để làm gì:</b> thay vì tự gõ tin nhắn đòi nợ (vừa mất công, vừa ngại), app <b>soạn sẵn nội dung lịch sự kèm link nợ</b>, bạn chỉ việc chọn gửi qua Zalo hay tin nhắn.
+<b>📍 Chỗ bấm:</b> khi có khách tới hạn cần nhắc, ngay màn hình <span class="snai-path">📒 SỔ NỢ</span> sẽ hiện một <b>khung nhắc nợ</b> ở phía trên danh sách, liệt kê tên các khách đó.
+<b>🪜 Làm từng bước:</b>
+<ol>
+<li>Nhìn khung nhắc nợ, tìm tên khách muốn đòi.</li>
+<li>Bấm nút <b>📤 Nhắc</b> nằm cạnh tên khách đó.</li>
+<li>Máy hiện bảng <b>chọn ứng dụng để gửi</b> — chọn <b>Zalo</b>, <b>Tin nhắn</b>, Messenger… tùy bạn.</li>
+<li>Chọn đúng <b>người nhận</b> trong ứng dụng đó rồi bấm gửi.</li>
+</ol>
+<div class="snai-ok">✅ Gửi xong, khách đó được <b>đánh dấu đã nhắc</b> và tạm ẩn khỏi khung nhắc, tới kỳ sau mới hiện lại — để bạn không nhắc trùng một người hai ba lần trong ngày.</div>
+<div class="snai-tip">💡 Muốn đổi <b>bao lâu nhắc lại một lần</b> (hằng ngày / 7 / 15 / 30 ngày): vào <span class="snai-path">🧰 Công cụ &amp; Sao lưu</span> → <b>🔔 Nhắc nợ tự động</b>.</div>
+<div class="snai-warn">⚠️ Không thấy bảng chọn ứng dụng: bạn đang mở app <b>bên trong Zalo/Facebook</b>. Bấm nút <b>⋮</b> góc trên → <b>Mở bằng trình duyệt</b>, rồi làm lại.</div>`},
+
+{c:'sn',t:'Mẹo ghi nợ thật nhanh cho khách quen',k:'ghi no nhanh meo khach quen thao tac nhanh ban dong nguoi tiet kiem thoi gian',
+a:`<b class="snai-h">⚡ Ghi nợ nhanh — mẹo cho lúc đông khách</b>
+<b>👉 Vấn đề:</b> đông khách, ai cũng đứng chờ, mà ghi nợ lâu thì rối. Đây là <b>4 mẹo rút ngắn</b> đã kiểm chứng.
+<b>1️⃣ Gõ 3 chữ cái đầu để tìm khách.</b> Ô <b>🔍 Tìm tên khách hàng</b> trên đầu danh sách: gõ <code>ngu</code> là ra Nguyễn, gõ <code>tu</code> là ra chú Tư. <b>Không cần gõ dấu.</b>
+<b>2️⃣ Vào thẳng nút 🛒 Mua.</b> Bấm tên khách → bấm ngay nút <b>🛒 Mua</b> → gõ <b>số tiền</b> → bấm <b>Lưu</b>. Ba chạm là xong, các ô khác bỏ trống cũng được.
+<b>3️⃣ Ô "Số kg / mặt hàng" ghi cực ngắn.</b> Gõ <code>2 bao</code>, <code>1 thùng</code>, <code>50kg</code>. Sau này nhìn lại vẫn nhớ, mà gõ chỉ mất 2 giây.
+<b>4️⃣ Ngày để nguyên.</b> App <b>tự điền ngày hôm nay</b>. Chỉ khi ghi bù cho hôm trước mới phải sửa ngày.
+<div class="snai-ok">✅ Ghi xong, số nợ của khách <b>cộng lên ngay lập tức</b>, không cần bấm lưu thêm lần nào nữa.</div>
+<div class="snai-tip">💡 Khách quá đông không kịp ghi máy thì <b>ghi tay ra giấy</b> trước, tối ngồi nhập lại vào app và <b>sửa ngày cho đúng</b>. Ghi tay xong bỏ luôn là cách mất tiền nhanh nhất.</div>
+<div class="snai-warn">⚠️ Đừng để hai người cùng ghi cho <b>cùng một khách</b> trên hai máy vào cùng lúc — dễ ghi trùng thành hai lần nợ.</div>`},
+
+/* ═════════ BỔ SUNG v2 — 🛒 BÁN HÀNG ═════════ */
+{c:'bh',t:'Khách mua thêm giữa chừng (đơn vẫn giữ nguyên)',k:'khach mua them chon them hang don van giu quay lai chon hang cart more',
+a:`<b class="snai-h">➕ Khách mua thêm</b>
+<b>👉 Tình huống:</b> đang mở giỏ tính tiền thì khách nói <i>"cho thêm chai nước nữa"</i>. Đừng đóng giỏ, đừng làm lại đơn — có nút riêng cho việc này.
+<b>🪜 Làm từng bước:</b>
+<ol>
+<li>Đang mở <b>giỏ hàng</b>, nhìn lên <b>trên cùng của giỏ</b>.</li>
+<li>Bấm nút viền xanh nét đứt: <span class="snai-path">➕ Khách mua thêm — chọn thêm hàng</span>.</li>
+<li>Giỏ tạm thu lại, bạn quay về <b>lưới hàng hóa</b>. Chọn thêm món, hoặc bấm <b>📷 Quét</b> quét thêm mã.</li>
+<li>Chọn xong, bấm <b>thanh giỏ hàng màu xanh</b> ở đáy màn hình để mở giỏ lại.</li>
+</ol>
+<div class="snai-ok">✅ <b>Hàng cũ vẫn còn nguyên</b> trong giỏ, món mới cộng thêm vào, tổng tiền tự tính lại. Giảm giá đã nhập cũng giữ nguyên.</div>
+<div class="snai-tip">💡 Khác với nút <b>🗂️ Giữ đơn</b>: "Khách mua thêm" là <b>vẫn phục vụ người này</b>, còn "Giữ đơn" là <b>cất đơn lại để quay sang bán cho người khác</b>.</div>`},
+
+{c:'bh',t:'Ghi chú cho đơn hàng',k:'ghi chu don hang note luu y giao hang dia chi nhan xet',
+a:`<b class="snai-h">📝 Ghi chú cho đơn</b>
+<b>👉 Để làm gì:</b> ghi kèm một câu nhắc vào đơn — như <i>giao chiều mai</i>, <i>để trước cổng</i>, <i>khách hẹn thứ 5 trả</i>, <i>bớt 10k rồi</i>. Câu này <b>in ra bill</b> và <b>lưu lại trong đơn</b> để sau này mở ra còn nhớ.
+<b>🪜 Làm từng bước:</b>
+<ol>
+<li>Chọn hàng xong, bấm <b>thanh giỏ hàng</b> ở đáy để mở giỏ.</li>
+<li>Ngay dưới danh sách hàng có một ô trống ghi mờ <b>"Ghi chú đơn (tuỳ chọn)"</b>.</li>
+<li>Bấm vào ô đó, gõ câu cần nhớ.</li>
+<li>Thanh toán như bình thường — ghi chú tự lưu theo đơn.</li>
+</ol>
+<div class="snai-ok">✅ Sau này vào <span class="snai-path">↩️ Đơn &amp; trả hàng</span>, mở đơn ra là <b>thấy lại câu ghi chú</b> đó.</div>
+<div class="snai-tip">💡 Ghi chú <b>gõ ngắn thôi</b> — bill nhiệt khổ nhỏ, câu dài sẽ bị xuống nhiều dòng, tốn giấy.</div>`},
+
+{c:'bh',t:'Xem chi tiết một đơn đã bán và lãi của đơn đó',k:'chi tiet don hang xem lai lai loi nhuan tung don mua gi bao nhieu',
+a:`<b class="snai-h">📋 Mở lại một đơn đã bán</b>
+<b>👉 Để làm gì:</b> khách quay lại khiếu nại, hoặc bạn muốn biết <b>đơn đó lời bao nhiêu</b>.
+<b>🪜 Làm từng bước:</b>
+<ol>
+<li>Vào màn hình <span class="snai-path">🛒 BÁN HÀNG</span>, ở tab <b>Bán</b>.</li>
+<li>Bấm nút <span class="snai-path">↩️ Đơn &amp; trả hàng</span> trên hàng nút phía trên.</li>
+<li>Danh sách đơn hiện ra, <b>mới nhất nằm trên cùng</b>. Bấm vào đơn cần xem.</li>
+</ol>
+<b>👁️ Trong bảng chi tiết đơn bạn thấy:</b>
+<ul>
+<li><b>Mã đơn</b>, ngày giờ bán, <b>ai bán</b> (nếu có nhiều nhân viên).</li>
+<li><b>Từng món</b>: số lượng, đơn giá, thành tiền. Món nào đã trả lại sẽ ghi <b style="color:#c0392b">màu đỏ</b>.</li>
+<li><b>Hình thức thanh toán</b>: tiền mặt / chuyển khoản / ghi nợ.</li>
+<li>Khung xanh nhạt phía dưới: <b>doanh thu – giá vốn = lãi của đơn này</b>.</li>
+</ul>
+<b>🔘 Các nút trong bảng chi tiết:</b> <b>↩️ Trả hàng</b> · <b>✍️ Chữ ký nhận hàng</b> · <b>🖨 In</b> · <b>🔗 Gửi link</b> · <b>🗑 Xóa đơn</b>.
+<div class="snai-tip">💡 Muốn tìm nhanh trong hàng trăm đơn: dùng ô <b>🔍 Tìm</b> ở trên cùng bảng, gõ <b>tên khách</b> hoặc <b>mã đơn</b>.</div>
+<div class="snai-warn">⚠️ Không thấy khung lãi: bạn đang đăng nhập bằng <b>máy nhân viên</b>, hoặc vai trò chưa có quyền xem báo cáo. Đó là cố ý — để nhân viên không biết giá vốn.</div>`},
+
+{c:'bh',t:'Xóa một đơn hàng đã bán',k:'xoa don hang da ban huy don ban nham bam nham xoa bill',
+a:`<b class="snai-h">🗑 Xóa đơn đã bán</b>
+<div class="snai-warn">⚠️ <b>Đọc kỹ trước khi làm.</b> Xóa đơn là <b>xóa vĩnh viễn</b>, không có nút hoàn tác. Trong hầu hết trường hợp, cách <b>đúng</b> là dùng <b>↩️ Trả hàng</b> chứ không phải xóa.</div>
+<b>🤔 Nên dùng cái nào:</b>
+<ul>
+<li><b>Khách trả lại hàng</b> (dù trả hết) → dùng <b>↩️ Trả hàng</b>. Cách này <b>cộng hàng về kho</b>, trừ doanh thu đúng, và <b>còn dấu vết</b> để đối chiếu sổ sách.</li>
+<li><b>Bấm nhầm tạo ra đơn rác</b> (bán 0đ, bấm thử, trùng hai lần) → mới nên <b>🗑 Xóa đơn</b>.</li>
+</ul>
+<b>🪜 Cách xóa:</b>
+<ol>
+<li>Tab <b>Bán</b> → <span class="snai-path">↩️ Đơn &amp; trả hàng</span> → bấm vào đơn cần xóa.</li>
+<li>Kéo xuống cuối bảng, bấm <b>🗑 Xóa đơn</b>.</li>
+<li>Máy hỏi lại — đọc kỹ rồi mới bấm đồng ý.</li>
+</ol>
+<div class="snai-ok">✅ Xóa đơn sẽ <b>trả hàng về kho</b> và <b>gỡ luôn link hóa đơn, chữ ký</b> đã gửi cho khách (nếu có), không để lại rác.</div>
+<div class="snai-warn">⚠️ Đơn đó nếu đã <b>ghi nợ cho khách</b> thì hãy <b>kiểm tra lại sổ nợ của khách</b> sau khi xóa, tránh còn sót số nợ treo.</div>
+<div class="snai-tip">🔒 Máy nhân viên <b>không xóa được đơn</b> — đây là khóa cứng ở máy chủ, cố ý làm vậy để tránh thất thoát.</div>`},
+
+{c:'bh',t:'Sao chép hóa đơn để dán vào Zalo',k:'sao chep copy hoa don gui zalo tin nhan khong co may in',
+a:`<b class="snai-h">📄 Gửi hóa đơn khi không có máy in</b>
+<b>👉 Tình huống:</b> shop chưa có máy in bill nhưng khách muốn có cái để đối chiếu.
+<b>🅰️ Cách 1 — Sao chép thành chữ (đơn giản nhất):</b>
+<ol>
+<li>Thanh toán xong, bảng <b>hóa đơn</b> hiện ra.</li>
+<li>Bấm nút <b>Sao chép</b> ở dưới bảng.</li>
+<li>Mở <b>Zalo</b> (hoặc Tin nhắn), vào cuộc trò chuyện với khách.</li>
+<li><b>Bấm giữ</b> vào ô soạn tin → chọn <b>Dán</b> → bấm gửi.</li>
+</ol>
+<b>🅱️ Cách 2 — Gửi link hóa đơn (chuyên nghiệp hơn):</b> bấm <b>🔗 Gửi link &amp; ký nhận</b>. Khách mở link thấy hóa đơn đẹp và <b>ký xác nhận đã nhận đủ hàng</b> ngay trên điện thoại.
+<div class="snai-ok">✅ Cách 2 có giá trị đối chiếu cao hơn hẳn — nhất là khi <b>giao hàng đi xa</b>, vì có chữ ký khách làm bằng chứng.</div>
+<div class="snai-tip">💡 Muốn xem lại hóa đơn của đơn cũ: <span class="snai-path">↩️ Đơn &amp; trả hàng</span> → bấm vào đơn → bấm <b>🖨 In</b> hoặc <b>🔗 Gửi link</b>.</div>`},
+
+/* ═════════ BỔ SUNG v2 — 📦 KHO ═════════ */
+{c:'kho',t:'Nhóm hàng — sắp xếp kho cho dễ tìm',k:'nhom hang danh muc phan loai sap xep loc kho cats',
+a:`<b class="snai-h">🗂️ Nhóm hàng (danh mục)</b>
+<b>👉 Để làm gì:</b> khi kho có vài trăm mặt hàng, tìm bằng mắt rất cực. Chia nhóm rồi thì bấm một cái là <b>chỉ hiện đúng nhóm đó</b> — bán nhanh hơn hẳn.
+<b>🪜 Đặt nhóm cho một mặt hàng:</b>
+<ol>
+<li>Tab <b>Kho</b> → bấm vào tên hàng → bảng sửa sản phẩm mở ra.</li>
+<li>Tìm ô <b>Nhóm hàng</b> (nằm cạnh ô SKU).</li>
+<li>Gõ tên nhóm bạn tự đặt: <code>Nước ngọt</code>, <code>Bánh kẹo</code>, <code>Gia vị</code>, <code>Thuốc lá</code>…</li>
+<li>Bấm <b>Lưu</b>.</li>
+</ol>
+<div class="snai-ok">✅ Nhóm nào <b>đã gõ một lần</b> thì lần sau bấm vào ô đó máy <b>gợi ý sẵn</b>, khỏi gõ lại — và gõ y hệt để khỏi bị tách thành hai nhóm.</div>
+<b>🔎 Dùng nhóm để lọc:</b> vào tab <b>Kho</b>, ngay dưới ô tìm kiếm có <b>hàng nút tròn tên các nhóm</b>. Bấm một nhóm → chỉ hiện hàng thuộc nhóm đó. Bấm <b>Tất cả</b> để xem lại hết.
+<div class="snai-tip">💡 Đừng chia quá nhỏ. <b>5–10 nhóm là vừa đẹp</b>. Chia 30 nhóm thì tìm nhóm còn lâu hơn tìm hàng.</div>
+<div class="snai-tip">📊 Báo cáo cũng <b>cộng tiền theo nhóm</b>, nên chia nhóm xong bạn biết được nhóm nào đẻ ra tiền nhiều nhất.</div>`},
+
+{c:'kho',t:'SKU là gì, có bắt buộc điền không?',k:'sku ma noi bo ma hang khac ma vach co bat buoc khong',
+a:`<b class="snai-h">🔖 SKU — mã nội bộ</b>
+<b>👉 Trả lời ngay:</b> <b>KHÔNG bắt buộc.</b> Bỏ trống vẫn bán bình thường.
+<b>🆚 Khác mã vạch chỗ nào:</b>
+<ul>
+<li><b>Mã vạch</b> — dãy số <b>nhà sản xuất in sẵn</b> trên bao bì, quét máy đọc được.</li>
+<li><b>SKU</b> — mã <b>bạn tự đặt</b> cho hàng <b>không có mã vạch</b>: gạo cân, rau, hàng tự đóng gói, hàng nhà làm.</li>
+</ul>
+<b>💡 Khi nào nên đặt SKU:</b>
+<ul>
+<li>Hàng không có mã vạch mà bạn muốn <b>gõ vài ký tự là ra</b>. Ví dụ gạo ST25 đặt <code>ST25</code>, gõ 4 chữ là ra ngay, nhanh hơn gõ "gạo thơm ST25".</li>
+<li>Hai mặt hàng <b>tên gần giống nhau</b> dễ lộn, đặt mã cho khác nhau rõ ràng.</li>
+</ul>
+<b>🪜 Đặt ở đâu:</b> tab <b>Kho</b> → bấm tên hàng → ô <b>SKU (mã nội bộ)</b> → gõ mã → <b>Lưu</b>.
+<div class="snai-ok">✅ Ô <b>tìm kiếm khi bán</b> tìm được cả <b>tên</b>, cả <b>mã vạch</b>, cả <b>SKU</b> — gõ cái nào ra cái đó.</div>
+<div class="snai-tip">💡 Đặt mã <b>ngắn, dễ gõ, không dấu</b>: <code>ST25</code>, <code>XM1</code>, <code>CF3IN1</code>. Đặt dài quá thì mất luôn ý nghĩa tiết kiệm thời gian.</div>`},
+
+{c:'kho',t:'Giá vốn — vì sao bắt buộc phải điền đúng',k:'gia von gia nhap lai lo bao cao sai loi nhuan am',
+a:`<b class="snai-h">💵 Giá vốn — con số quan trọng nhất</b>
+<b>👉 Giá vốn là gì:</b> là <b>số tiền bạn bỏ ra để có món hàng đó</b> (tiền lấy hàng). Không phải giá bán cho khách.
+<b>🧮 App dùng giá vốn để tính:</b> <b>Lãi = Giá bán − Giá vốn</b>. Nếu giá vốn <b>để trống hoặc điền bừa</b> thì:
+<ul>
+<li>Báo cáo lãi <b>sai bét</b> — thường là <b>lãi ảo cao vống lên</b>, tưởng lời mà thực ra đang lỗ.</li>
+<li>Mục <b>Cố vấn</b> cảnh báo lung tung vì nó tính trên số sai.</li>
+<li>Bạn <b>không biết mặt hàng nào đang lỗ</b> để mà bỏ hoặc tăng giá.</li>
+</ul>
+<b>🪜 Điền / sửa giá vốn:</b> tab <b>Kho</b> → bấm tên hàng → ô <b>Giá vốn (₫)</b> → gõ số tiền lấy hàng → <b>Lưu</b>.
+<div class="snai-ok">✅ <b>Cách tốt nhất:</b> mỗi lần lấy hàng về thì <b>nhập qua tab Nhập</b> — app sẽ <b>tự cập nhật giá vốn</b> theo giá bạn vừa nhập, khỏi phải nhớ sửa tay.</div>
+<div class="snai-tip">💡 Hàng có <b>chiết khấu, khuyến mãi, tiền vận chuyển</b> thì lấy <b>tổng tiền thực trả chia cho số lượng</b> mới ra giá vốn thật. Ví dụ 10 thùng hết 1.200.000đ (đã gồm vận chuyển) → giá vốn 1 thùng = 120.000đ.</div>
+<div class="snai-warn">⚠️ Giá vốn là <b>bí mật của bạn</b>. Nhân viên vai <b>Thu ngân</b> không nhìn thấy cột này — cứ yên tâm điền đúng.</div>`},
+
+{c:'kho',t:'Tồn kho bị sai — cách chỉnh lại cho đúng',k:'ton kho sai lech so luong khong dung chinh lai sua ton am',
+a:`<b class="snai-h">🔧 Tồn kho bị lệch</b>
+<b>👉 Vì sao lệch:</b> bán không bấm máy, lấy hàng dùng trong nhà, hàng hư bể, nhập thiếu nhập dư, hoặc lúc tạo sản phẩm điền sai tồn đầu.
+<b>🅰️ Cách 1 — SỬA NHANH một vài mặt hàng (dùng khi lệch ít):</b>
+<ol>
+<li>Tab <b>Kho</b> → bấm vào tên hàng.</li>
+<li>Sửa lại ô <b>Tồn kho</b> cho đúng số thực tế bạn đếm được.</li>
+<li>Bấm <b>Lưu</b>.</li>
+</ol>
+<b>🅱️ Cách 2 — KIỂM KHO cả kho (dùng khi lệch nhiều, cuối tháng):</b>
+<ol>
+<li>Tab <b>Kho</b> → bấm <span class="snai-path">📋 Kiểm kho</span>.</li>
+<li>Cầm điện thoại đi <b>quét mã từng món</b>, hoặc nhập số lượng đếm được.</li>
+<li>Đếm xong bấm <b>✔ Lưu</b> — app ghi lại <b>ai kiểm, lúc nào, lệch bao nhiêu</b>.</li>
+</ol>
+<b>🆎 Cách 3 — HÀNG HƯ, BỂ, HẾT HẠN:</b> tab <b>Kho</b> → <span class="snai-path">📤 Xuất hủy</span>. Cách này <b>trừ kho mà không tính là bán</b>, nên báo cáo doanh thu không bị sai.
+<div class="snai-ok">✅ <b>Nên dùng cách 2 và 3</b> hơn cách 1, vì hai cách đó <b>có lưu dấu vết</b> trong lịch sử — sau này lật lại biết vì sao hụt hàng.</div>
+<div class="snai-warn">⚠️ Sửa tay ô Tồn kho (cách 1) thì <b>không để lại dấu vết gì cả</b>. Nếu shop có nhân viên, đây chính là kẽ hở để thất thoát. Shop có nhân viên thì <b>đừng dùng cách 1</b>.</div>
+<div class="snai-tip">💡 Nghi nhân viên bán ngoài sổ: cuối ca mở <b>💰 Quỹ / Chốt ca</b> → <b>📦 Đối chiếu kho</b> — app chỉ ra ngay món nào hụt mà không có đơn bán.</div>`},
+
+/* ═════════ BỔ SUNG v2 — 📊 BÁO CÁO & QUỸ CA ═════════ */
+{c:'bc',t:'Xem lại lịch sử các ca đã chốt',k:'lich su chot ca cac ca cu xem lai ca hom qua thua thieu',
+a:`<b class="snai-h">🕘 Lịch sử chốt ca</b>
+<b>👉 Để làm gì:</b> xem lại <b>các ca đã chốt hôm qua, tuần trước</b> — ai trực, bán được bao nhiêu, thừa hay thiếu tiền.
+<b>🪜 Làm từng bước:</b>
+<ol>
+<li>Vào <span class="snai-path">🛒 BÁN HÀNG</span> → tab <b>Báo cáo</b> (nút dưới cùng bên phải).</li>
+<li>Bấm <span class="snai-path">💰 Quỹ / Chốt ca</span>.</li>
+<li>Bấm <b>🕘 Lịch sử chốt ca</b>.</li>
+<li>Danh sách hiện ra, mỗi dòng là một ca: <b>ngày giờ · tên người trực · nhãn màu</b>.</li>
+</ol>
+<b>🎨 Nhãn màu nghĩa là gì:</b>
+<ul>
+<li><b style="color:#0a5f4a">Xanh</b> — đếm tiền <b>khớp</b> đúng bằng số phải có. Tốt.</li>
+<li><b style="color:#a32b1c">Đỏ</b> — <b>THIẾU</b> tiền so với số phải có.</li>
+<li><b style="color:#7c4a03">Vàng</b> — <b>THỪA</b> tiền (thường do thối nhầm hoặc quên ghi một khoản thu).</li>
+</ul>
+<b>🔍 Bấm vào một ca</b> để xem chi tiết: quỹ đầu ca, bán tiền mặt, thu nợ, chi vặt, nộp về chủ, số phải có, số đếm được, chênh lệch.
+<div class="snai-tip">💡 Trong chi tiết ca còn có nút <b>📜 Chi tiết các khoản thu / chi</b> — liệt kê từng khoản một, ai ghi, lúc mấy giờ.</div>
+<div class="snai-warn">⚠️ Chỉ <b>Chủ</b> và người có quyền xem báo cáo mới mở được lịch sử ca. Đúng như vậy — không nên cho thu ngân xem chênh lệch của ca người khác.</div>`},
+
+{c:'bc',t:'Đọc hiểu bảng báo cáo — từng mục nghĩa là gì',k:'doc hieu bao cao y nghia tung muc doanh thu lai gop bien loi abc hang ban cham top khach',
+a:`<b class="snai-h">📖 Đọc bảng báo cáo</b>
+<b>👉 Mở ở đâu:</b> <span class="snai-path">🛒 BÁN HÀNG</span> → tab <b>Báo cáo</b> → chọn kỳ <b>Hôm nay / 7 ngày / 30 ngày / Tùy chọn</b>.
+<b>📊 Từ trên xuống, từng mục có nghĩa:</b>
+<ol>
+<li><b>Doanh thu</b> — tổng tiền hàng bán ra trong kỳ (đã trừ hàng khách trả lại).</li>
+<li><b>Giá vốn</b> — tổng tiền bạn đã bỏ ra mua số hàng đã bán đó.</li>
+<li><b>Lãi gộp</b> = Doanh thu − Giá vốn. <b>Đây là số quan trọng nhất</b>, nhưng <b>chưa trừ</b> tiền thuê mặt bằng, điện nước, lương.</li>
+<li><b>Biên lời (%)</b> — cứ bán 100đ thì lời mấy đồng. Tạp hóa thường 8–15%, quán ăn 40–60%.</li>
+<li><b>Số đơn</b> và <b>Trung bình mỗi đơn</b> — đông khách hay ít khách, mỗi khách mua nhiều hay ít.</li>
+<li><b>Hình thức thanh toán</b> — tiền mặt / chuyển khoản / ghi nợ chiếm bao nhiêu phần.</li>
+<li><b>Giờ cao điểm</b> — khung giờ nào đông nhất. Dùng để <b>xếp người trực</b> cho đúng.</li>
+<li><b>Nhịp theo thứ</b> — thứ mấy trong tuần bán chạy nhất.</li>
+<li><b>Hàng bán chạy</b> / <b>Hàng bán chậm</b> — cái nào nên nhập thêm, cái nào nên ngưng nhập.</li>
+<li><b>Phân tích ABC</b> — nhóm A là số ít mặt hàng đẻ ra <b>phần lớn doanh thu</b>; nhóm C bán lai rai. <b>Nhóm A tuyệt đối không được để hết hàng.</b></li>
+<li><b>Top khách hàng</b> — ai mua nhiều nhất. Nên chăm sóc mấy người này.</li>
+<li><b>Tồn kho</b> — tổng vốn đang nằm chết trong kho, và danh sách <b>sắp hết hàng</b>.</li>
+<li><b>📒 Báo cáo Sổ Nợ chi tiết</b> (khung xanh cuối trang) — ai đang nợ, nợ bao nhiêu, nợ bao lâu rồi.</li>
+</ol>
+<div class="snai-tip">💡 <b>Ba con số nên xem mỗi tối:</b> Doanh thu · Lãi gộp · Danh sách sắp hết hàng. Ba số này đủ để điều hành cửa hàng nhỏ.</div>
+<div class="snai-warn">⚠️ Lãi gộp <b>chưa trừ chi phí cố định</b>. Lãi gộp 5 triệu/tháng mà tiền thuê mặt bằng 6 triệu thì thực tế đang <b>lỗ</b>. Nhớ trừ nhẩm phần này.</div>`},
+
+{c:'bc',t:'Xem chi tiết các khoản thu chi trong ca',k:'nhat ky khoan thu chi trong ca chi vat nop tien xem lai ai ghi',
+a:`<b class="snai-h">📜 Nhật ký thu chi của ca</b>
+<b>👉 Để làm gì:</b> cuối ca thấy <b>thiếu tiền</b> mà không biết vì sao — mở cái này ra là thấy <b>từng khoản một</b>, ai ghi, lúc mấy giờ.
+<b>🪜 Mở ở đâu:</b>
+<ol>
+<li>Tab <b>Báo cáo</b> → <span class="snai-path">💰 Quỹ / Chốt ca</span>.</li>
+<li>Đang trong ca thì bấm luôn <b>📜 Chi tiết các khoản thu / chi trong ca</b>.</li>
+<li>Ca đã chốt rồi thì vào <b>🕘 Lịch sử chốt ca</b> → bấm vào ca đó → rồi bấm nút <b>📜</b>.</li>
+</ol>
+<b>🏷️ Mỗi dòng có một nhãn màu:</b>
+<ul>
+<li><b style="color:#0d7a5f">Xanh (vào)</b> — tiền <b>vào két</b>: bán tiền mặt, khách trả nợ, chủ bỏ thêm tiền lẻ.</li>
+<li><b style="color:#c0392b">Đỏ (ra)</b> — tiền <b>ra khỏi két</b>: chi vặt (mua đá, gửi xe), nộp tiền về chủ.</li>
+<li><b style="color:#3a49b8">Xanh dương</b> — khoản <b>chuyển khoản</b>, không nằm trong két tiền mặt.</li>
+</ul>
+<div class="snai-ok">✅ Mỗi khoản đều ghi rõ <b>ai ghi</b> và <b>mấy giờ</b> — rất dễ hỏi lại nhân viên khi số không khớp.</div>
+<div class="snai-tip">💡 Ghi nhầm một khoản: bấm nút <b>xóa</b> ở cuối dòng đó (chỉ Chủ mới xóa được), rồi ghi lại cho đúng.</div>
+<div class="snai-warn">⚠️ Một khoản bị đánh dấu sai là <b>tiền mặt</b> trong khi thực tế khách <b>chuyển khoản</b> sẽ làm ca báo <b>thiếu tiền oan</b>. Bấm vào khoản đó để <b>đánh dấu lại là chuyển khoản</b> là số khớp lại ngay.</div>`},
+
+/* ═════════ BỔ SUNG v2 — 👥 NHÂN VIÊN ═════════ */
+{c:'nv',t:'Giao ca cho nhân viên — cần bật những quyền gì',k:'giao ca cho nhan vien quyen can bat mo ca chot ca ban hang phan quyen goi y',
+a:`<b class="snai-h">🤝 Giao cửa hàng cho nhân viên trông</b>
+<b>👉 Mục tiêu:</b> nhân viên <b>bán được, thu tiền được</b>, nhưng <b>không xem được lời lỗ</b>, <b>không sửa giá</b>, <b>không xóa đơn</b>.
+<b>🪜 Làm theo đúng thứ tự 4 bước này:</b>
+<ol>
+<li><b>Tạo tài khoản nhân viên riêng.</b> Tab <b>Báo cáo</b> → <b>👤 Quản lý nhân viên</b> → khung vàng <b>🔐 Tài khoản đăng nhập cho máy nhân viên</b> → <b>➕ Tạo tài khoản nhân viên</b>. Đặt email + mật khẩu riêng, <b>ghi ra giấy</b>.</li>
+<li><b>Thêm từng người và đặt PIN.</b> Vẫn bảng đó → <b>➕ Thêm nhân viên</b> → gõ tên, đặt <b>PIN 4–6 số</b>, chọn vai <b>Thu ngân</b>, tick cửa hàng người đó được làm.</li>
+<li><b>Chỉnh quyền chi tiết.</b> Bấm <b>⚙️ Tùy chỉnh quyền chi tiết</b>. Với Thu ngân, nên bật: <b>bán hàng</b> · <b>thu nợ (ghi khách TRẢ tiền)</b> · <b>mở ca / chốt ca</b> nếu bạn muốn họ tự chốt. Nên <b>TẮT</b>: xem báo cáo · sửa giá · sửa/xóa sản phẩm · sửa Sổ Nợ · trả hàng / hoàn tiền.</li>
+<li><b>Đăng nhập máy ngoài quầy bằng tài khoản nhân viên</b> vừa tạo ở bước 1 (không phải tài khoản Chủ).</li>
+</ol>
+<div class="snai-ok">✅ Làm đủ 4 bước thì mỗi đơn bán ra đều <b>ghi tên người bán</b>, cuối ca chốt tiền <b>ra thừa thiếu rõ ràng</b> — có gì hỏi đúng người.</div>
+<div class="snai-warn">⚠️ <b>Bỏ bước 1 là hỏng cả hệ thống.</b> Nếu máy ngoài quầy vẫn đăng nhập bằng <b>tài khoản Chủ</b>, nhân viên chỉ cần bấm <b>🔑 Quên PIN — Chủ mở khóa</b>… nhưng quan trọng hơn: mọi khóa chỉ nằm ở giao diện, không khóa ở máy chủ.</div>
+<div class="snai-tip">💡 Bật <b>quyền trả hàng</b> cho thu ngân chỉ khi bạn thật sự tin tưởng — đây là kẽ hở thất thoát phổ biến nhất (giả vờ trả hàng rồi lấy tiền).</div>`},
+
+{c:'nv',t:'Nhân viên làm nhiều cửa hàng cùng lúc',k:'nhan vien lam nhieu cua hang chi nhanh tick nhieu noi phan cong',
+a:`<b class="snai-h">🏪🏪 Một người làm nhiều cửa hàng</b>
+<b>👉 Tình huống:</b> bạn có 2–3 chi nhánh, có người sáng làm quán A, chiều chạy qua quán B.
+<b>🪜 Cách phân công:</b>
+<ol>
+<li>Tab <b>Báo cáo</b> → <b>👤 Quản lý nhân viên</b> → bấm vào <b>tên người đó</b>.</li>
+<li>Kéo xuống mục <b>Cửa hàng được phân</b> — có <b>ô tick cho từng cửa hàng</b>.</li>
+<li><b>Tick nhiều nơi</b>: tick cả quán A và quán B.</li>
+<li>Bấm <b>Lưu</b>.</li>
+</ol>
+<div class="snai-ok">✅ Từ giờ, người đó mở app ở <b>cửa hàng nào cũng thấy tên mình</b> ở cổng PIN, nhập PIN là vào bán được. Doanh thu <b>tách riêng theo từng cửa hàng</b>, không bị lẫn.</div>
+<div class="snai-tip">💡 Người <b>không được tick</b> vào cửa hàng nào thì <b>không thấy tên mình</b> ở cổng PIN của cửa hàng đó — không vào được. Đây là cách chặn đơn giản và hiệu quả.</div>
+<div class="snai-warn">⚠️ Mỗi cửa hàng <b>chốt ca riêng</b>. Người đó chạy qua quán B thì phải <b>chốt ca ở quán A trước</b>, rồi qua quán B <b>mở ca mới</b>. Không chốt thì ca cũ treo lơ lửng, cuối tháng số liệu rối.</div>`},
+
+/* ═════════ BỔ SUNG v2 — 🏪 CỬA HÀNG & NGÀNH ═════════ */
+{c:'cn',t:'Mua gói ngành nghề — giá và cách thanh toán',k:'mua goi nganh gia bao nhieu thanh toan chuyen khoan qr fnb thoi trang karaoke can ky',
+a:`<b class="snai-h">💳 Mua gói ngành nghề</b>
+<b>👉 Hiểu cho đúng:</b> mỗi gói ngành là <b>một gói thuê riêng, tính tiền riêng theo tháng</b>, <b>cộng thêm</b> gói Bán hàng nền. Không mua gói ngành thì vẫn bán bình thường bằng <b>🛒 Bán hàng đa năng</b> — chỉ là không có màn Bàn, màn Phòng, size–màu, bậc giá.
+<b>🪜 Cách mua:</b>
+<ol>
+<li>Ở màn <span class="snai-path">📒 SỔ NỢ</span>, bấm tab <span class="snai-path">🛒 BÁN HÀNG</span>.</li>
+<li>Bảng <b>chọn ngành nghề</b> hiện ra với 5 lựa chọn. Bấm vào gói bạn muốn.</li>
+<li>Chưa mua thì hiện <b>bảng mua gói</b>: có giá theo tháng và <b>gói năm tặng thêm tháng</b>.</li>
+<li>Chọn số tháng → màn hình hiện <b>mã QR chuyển khoản</b> với <b>số tiền và nội dung điền sẵn</b>.</li>
+<li>Mở app ngân hàng → quét mã → <b>giữ nguyên nội dung chuyển khoản</b> → chuyển.</li>
+<li>Chuyển xong, chờ chủ phần mềm mở gói. Muốn nhanh thì <b>gọi hotline báo một tiếng</b>.</li>
+</ol>
+<div class="snai-warn">⚠️ <b>ĐỪNG sửa nội dung chuyển khoản.</b> Nội dung đó chứa <b>email của bạn</b> — chủ phần mềm nhìn vào mới biết mở gói cho ai. Sửa đi là tiền về mà không biết của ai.</div>
+<div class="snai-ok">✅ Không tiện chuyển khoản ngay: bấm <b>📩 Chỉ gửi yêu cầu (chuyển khoản sau)</b> — yêu cầu của bạn bay về bảng quản trị, chủ phần mềm sẽ liên hệ lại.</div>
+<div class="snai-tip">🎁 <b>Gói nào cũng có dùng thử miễn phí</b> trước khi bỏ tiền — xem mục "Dùng thử gói ngành / gói chi nhánh miễn phí".</div>`},
+
+{c:'cn',t:'Dùng thử gói ngành / gói chi nhánh miễn phí',k:'dung thu mien phi goi nganh chi nhanh 14 ngay 15 ngay trial xai thu',
+a:`<b class="snai-h">🎁 Dùng thử trước khi mua</b>
+<b>👉 Nguyên tắc:</b> mỗi gói cho <b>dùng thử miễn phí một lần duy nhất</b> cho mỗi tài khoản, <b>đủ hết chức năng</b>, không thiếu gì.
+<b>🪜 Mở dùng thử gói NGÀNH (quán ăn, thời trang, karaoke, cân ký):</b>
+<ol>
+<li>Màn <span class="snai-path">📒 SỔ NỢ</span> → bấm tab <span class="snai-path">🛒 BÁN HÀNG</span>.</li>
+<li>Bấm vào <b>ngành bạn muốn thử</b> trong danh sách.</li>
+<li>Thấy nút <b>🎁 DÙNG THỬ MIỄN PHÍ</b> → bấm vào.</li>
+<li>Chờ vài giây, <b>trang tự tải lại</b> và mở đúng ngành đó.</li>
+</ol>
+<b>🪜 Mở dùng thử gói CHI NHÁNH (mở thêm cửa hàng):</b>
+<ol>
+<li>Vào <b>Bán hàng</b> → bấm nút <b>🏪 ▾</b> ở <b>góc trên bên phải</b>.</li>
+<li>Bấm <b>➕ Mở cửa hàng mới</b>.</li>
+<li>Chưa có gói thì hiện lời mời <b>dùng thử 14 ngày miễn phí</b> → bấm đồng ý.</li>
+</ol>
+<div class="snai-ok">✅ Hết hạn dùng thử, <b>dữ liệu vẫn còn nguyên</b>, không mất. App chỉ <b>tự quay về cửa hàng thường</b> và tạm ẩn chức năng riêng của gói đó. Mua gói là hiện lại y như cũ.</div>
+<div class="snai-warn">⚠️ <b>Chỉ CHỦ shop mới mở được dùng thử</b>, máy nhân viên không mở được. Và <b>phải có mạng</b>.</div>
+<div class="snai-tip">💡 Báo <i>"đã dùng thử gói này rồi"</i> nghĩa là tài khoản của bạn đã thử trước đó. Gọi hotline để được mở gói trả phí.</div>`},
+
+{c:'cn',t:'Gói ngành hết hạn thì chuyện gì xảy ra?',k:'goi nganh het han mat du lieu ban do khoa tro ve binh thuong',
+a:`<b class="snai-h">⛔ Khi gói ngành hết hạn</b>
+<b>👉 Điều quan trọng nhất phải biết: <span style="color:#0a5f4a">KHÔNG MẤT DỮ LIỆU.</span></b> Tuyệt đối không.
+<b>📉 Cái gì xảy ra:</b>
+<ul>
+<li>App <b>tự chuyển cửa hàng đó về Bán hàng đa năng</b> (gói nền).</li>
+<li><b>Tạm ẩn</b> phần riêng của ngành: màn Bàn (quán ăn), màn Phòng (karaoke), bảng size–màu, bậc giá cân ký.</li>
+<li>Khi bấm vào ngành đó, app hiện <b style="color:#c0392b">⛔ HẾT HẠN — bấm để gia hạn</b>.</li>
+</ul>
+<b>✅ Cái gì VẪN CHẠY BÌNH THƯỜNG:</b>
+<ul>
+<li><b>Bán hàng, quét mã, thu tiền, in bill</b> — chạy đủ.</li>
+<li><b>Toàn bộ Sổ Nợ</b> — không liên quan gói ngành, luôn chạy.</li>
+<li><b>Kho, nhập hàng, báo cáo</b> — chạy đủ.</li>
+<li><b>Dữ liệu cũ</b>: danh sách bàn, danh sách phòng, công thức nguyên vật liệu, bảng size–màu, bậc giá — <b>vẫn nằm nguyên</b>, chỉ tạm không hiện.</li>
+</ul>
+<div class="snai-ok">✅ <b>Gia hạn xong là hiện lại y hệt lúc trước</b>, không phải nhập lại một chữ nào.</div>
+<div class="snai-tip">💡 App <b>nhắc trước khi hết hạn</b> bằng băng màu ở đầu màn hình. Thấy băng đó thì gia hạn sớm, đừng để đứt giữa giờ bán.</div>`},
+
+{c:'cn',t:'Đổi ngành nghề cho cửa hàng',k:'doi nganh nghe chuyen nganh khac chon lai nganh cua hang',
+a:`<b class="snai-h">⇄ Đổi ngành nghề</b>
+<b>👉 Khi nào cần:</b> lúc đầu chọn nhầm, hoặc quán đổi mô hình (tạp hóa chuyển sang bán cà phê).
+<b>🪜 Làm từng bước:</b>
+<ol>
+<li>Vào <span class="snai-path">🛒 BÁN HÀNG</span>.</li>
+<li>Bấm nút <b>🏪 ▾</b> ở <b>góc trên bên phải</b>.</li>
+<li>Bấm <b>⇄ Chọn ngành khác</b>.</li>
+<li>Chọn ngành mới → app mở gói (nếu đã mua/còn dùng thử) rồi <b>tự tải lại trang</b>.</li>
+</ol>
+<div class="snai-ok">✅ <b>Đổi ngành KHÔNG mất hàng hóa, không mất đơn cũ, không mất sổ nợ.</b> Chỉ đổi cái "áo ngoài" — thêm hoặc bớt màn hình chuyên dụng.</div>
+<div class="snai-warn">⚠️ Đổi từ <b>quán ăn</b> sang ngành khác thì <b>màn Bàn tạm ẩn</b>. Bàn nào đang có khách ngồi (đang giữ món) thì <b>thanh toán hết rồi hãy đổi</b>, kẻo món đang treo trong bàn bị kẹt lại.</div>
+<div class="snai-tip">💡 Mỗi cửa hàng có <b>ngành riêng</b>. Bạn có thể để quán A là F&amp;B, quán B là tạp hóa đa năng — không bắt buộc giống nhau. Đặt ngành cho từng cửa hàng ở <b>🏪 ▾</b> → bấm vào cửa hàng → ô <b>Ngành nghề</b>.</div>
+<div class="snai-warn">⚠️ Chỉ <b>CHỦ shop</b> đổi được ngành, và <b>phải có mạng</b>.</div>`},
+
+/* ═════════ BỔ SUNG v2 — 📱 ĐƠN QR TẠI BÀN ═════════ */
+{c:'qr',t:'Đơn QR tại bàn là gì? Dùng làm gì?',k:'don qr tai ban la gi khach tu goi mon quet ma tren ban thuc don menu do mot nguoi chay ban',
+a:`<b class="snai-h">📱 Khách tự gọi món bằng mã QR</b>
+<b>👉 Nó làm được gì:</b> bạn <b>dán một mã QR lên mỗi bàn</b>. Khách ngồi xuống, lấy điện thoại <b>rê camera vào mã</b> là hiện ra <b>thực đơn của quán</b>. Khách tự bấm chọn món rồi bấm gửi — đơn <b>chạy thẳng xuống máy tính tiền</b> kèm <b>tiếng chuông báo</b>.
+<b>🎯 Lợi ích thật sự:</b>
+<ul>
+<li><b>Đỡ hẳn một người chạy bàn ghi giấy.</b> Quán đông vẫn không sót món.</li>
+<li><b>Không ghi nhầm món</b> — khách tự bấm, tự chịu.</li>
+<li>Khách <b>không phải tải ứng dụng gì cả</b>, chỉ cần camera điện thoại.</li>
+</ul>
+<b>🔒 Ba điều được khóa chặt cho bạn yên tâm:</b>
+<ol>
+<li>Đơn khách gửi <b>KHÔNG tự vào bill</b>. Nhân viên phải bấm <b>Nhận vào bàn</b> thì món mới vào — khách phá cũng không lên tiền.</li>
+<li>Giá luôn lấy <b>theo giá trong kho lúc nhận đơn</b>, không lấy giá khách gửi lên.</li>
+<li>Món đã xóa khỏi kho thì <b>bỏ qua và báo rõ cho nhân viên</b>.</li>
+</ol>
+<div class="snai-warn">⚠️ <b>Điều kiện dùng:</b> phải đang bật <b>gói F&amp;B (Nhà hàng · Quán ăn · Cafe)</b> vì cần có <b>sơ đồ bàn</b>, và cần thêm <b>gói Đơn QR</b> (có dùng thử 14 ngày miễn phí). Quán tạp hóa, thời trang không dùng được cái này.</div>
+<div class="snai-tip">💡 Bàn nào khách lớn tuổi không quen quét mã thì nhân viên cứ ghi tay như cũ — hai cách <b>dùng song song</b> được, không xung đột.</div>`},
+
+{c:'qr',t:'Bật Đơn QR và tạo mã cho quán (lần đầu)',k:'bat don qr tao ma lan dau cai dat day thuc don len ma bat dau',
+a:`<b class="snai-h">🚀 Bật Đơn QR lần đầu</b>
+<b>⛳ Làm trước 2 việc này, thiếu là không chạy:</b>
+<ol>
+<li>Cửa hàng phải đang ở <b>ngành F&amp;B</b> (bấm <b>🏪 ▾</b> → xem ngành).</li>
+<li>Phải <b>đã tạo bàn</b> trong tab <b>🍽️ Bàn</b> và <b>kho phải có món</b> (có tên, có giá bán).</li>
+</ol>
+<b>🪜 Bật lần đầu:</b>
+<ol>
+<li>Vào <span class="snai-path">🛒 BÁN HÀNG</span> → tìm tab <b>Đơn QR</b> ở thanh dưới cùng.</li>
+<li>Chưa mua gói thì hiện màn giới thiệu → bấm <b>🎁 Dùng thử 14 ngày miễn phí</b>.</li>
+<li>Bấm nút <b>Tạo mã &amp; đẩy thực đơn</b>.</li>
+<li>Chờ vài giây. Xong, màn hình hiện: <b>Tên hiện cho khách</b>, <b>số món trên thực đơn</b>, <b>số bàn</b>.</li>
+</ol>
+<div class="snai-ok">✅ <b>Biết là xong khi:</b> thấy nút <b>Bật nhận đơn qua mã QR</b> chuyển trạng thái <b>ĐANG BẬT</b>, và có nút <b>🖨️ In mã QR các bàn</b>.</div>
+<b>🔜 Việc tiếp theo:</b> in mã dán lên bàn — xem mục <b>"In mã QR dán lên từng bàn"</b>.
+<div class="snai-warn">⚠️ Báo <b>"Chưa có bàn nào"</b> → qua tab <b>🍽️ Bàn</b> → <b>➕ Thêm bàn</b> trước đã.<br>Báo <b>"Kho chưa có món nào"</b> → qua tab <b>Kho</b> → <b>➕ Thêm SP</b> trước đã.</div>
+<div class="snai-tip">💡 Thực đơn QR nhận <b>tối đa 300 món</b>. Quán nhiều hơn thì app tự lấy 300 món đầu — nên <b>xóa bớt món không còn bán</b> cho gọn.</div>`},
+
+{c:'qr',t:'In mã QR dán lên từng bàn',k:'in ma qr cac ban dan len ban a4 a5 in nhiet the qr cat roi',
+a:`<b class="snai-h">🖨️ In mã QR cho các bàn</b>
+<b>📍 Ở đâu:</b> <span class="snai-path">🛒 BÁN HÀNG</span> → tab <b>Đơn QR</b> → bấm <b>🖨️ In mã QR các bàn</b>.
+<b>🅰️ Cách 1 — In máy tính, khổ A4 / A5 (khuyên dùng):</b>
+<ol>
+<li>Chọn <b>🖨️ Máy tính — khổ A4/A5</b>.</li>
+<li>Chọn khổ <b>A4</b> (thẻ to hơn, mỗi tờ được nhiều thẻ hơn) hoặc <b>A5</b>.</li>
+<li>Bấm in → trong hộp thoại in của máy tính chọn đúng khổ giấy, hoặc chọn <b>Lưu thành PDF</b> đem ra tiệm in.</li>
+<li>In xong <b>cắt rời theo nét đứt</b>, mỗi thẻ có sẵn <b>tên quán</b> và <b>tên bàn</b> in to ở trên.</li>
+</ol>
+<div class="snai-ok">✅ App tự xếp <b>2 thẻ một hàng</b> và canh sao cho <b>mã QR không bao giờ bị ranh giới trang cắt ngang</b> — vì mã bị cắt mất một góc là quét không ra.</div>
+<b>🅱️ Cách 2 — In nhiệt 58 / 80mm:</b> chọn <b>🖨️ In nhiệt qua trình duyệt</b> → mỗi bàn ra <b>một tờ rời</b>.
+<b>📌 Dán thế nào cho bền:</b>
+<ul>
+<li>Dán <b>giữa mặt bàn</b> hoặc <b>kẹp vào standee nhỏ</b> để khách ngồi đâu cũng thấy.</li>
+<li><b>Ép plastic</b> hoặc bọc băng keo trong — bàn ăn hay dính dầu mỡ, giấy thường hỏng sau vài ngày.</li>
+<li>Ghi thêm dòng chữ to: <b>"Quét mã để gọi món"</b> cho khách biết mà làm.</li>
+</ul>
+<div class="snai-warn">⚠️ <b>Dán đúng mã đúng bàn!</b> Dán mã bàn 3 lên bàn 5 là đơn khách bàn 5 sẽ nhảy vào bàn 3 — rối tiền ngay.</div>
+<div class="snai-tip">💡 Báo <b>"Cần mạng để tải bộ tạo mã QR"</b> → bật wifi/4G rồi bấm lại. Chỉ lần đầu mới cần mạng để tải bộ tạo mã.</div>`},
+
+{c:'qr',t:'Nhận đơn khách gửi vào bàn',k:'nhan don qr vao ban chuong bao don cho bo don khach gui len',
+a:`<b class="snai-h">🔔 Nhận đơn khách gửi</b>
+<b>👉 Luồng chạy:</b> khách bấm gửi → máy tính tiền <b>kêu chuông</b> và đơn hiện trong tab <b>Đơn QR</b> → nhân viên xem rồi bấm <b>Nhận vào bàn</b>.
+<b>🪜 Nhân viên làm gì:</b>
+<ol>
+<li>Nghe chuông → mở tab <b>Đơn QR</b>.</li>
+<li>Xem đơn: <b>tên bàn</b>, <b>danh sách món</b>, <b>ghi chú của khách</b>, <b>tạm tính theo giá kho</b>.</li>
+<li>Đúng rồi thì bấm <b>Nhận vào bàn</b> — món chạy thẳng vào bàn đó trong sơ đồ bàn.</li>
+<li>Khách gọi đùa, gọi nhầm thì bấm <b>Bỏ đơn</b> — món <b>KHÔNG vào bill</b>.</li>
+</ol>
+<b>💰 Tính tiền:</b> làm y như thường — vào tab <b>🍽️ Bàn</b> → bấm vào bàn đó → kiểm lại món → <b>thanh toán</b>.
+<div class="snai-ok">✅ Nhận đơn xong, món nằm trong bàn <b>y hệt như nhân viên tự bấm</b> — vẫn sửa được số lượng, xóa món, thêm món, giảm giá.</div>
+<div class="snai-ok">✅ <b>Bàn đó đang mở sẵn trên máy tính tiền thì món khách gọi thêm TỰ CỘNG vào giỏ đang phục vụ</b>, kèm dòng báo <i>"Bàn … gọi thêm — đã cộng … món vào giỏ"</i>. Không sợ tính thiếu tiền, không sợ mất món lúc đóng bàn.</div>
+<div class="snai-warn">⚠️ Báo <b>"món không còn trong kho"</b>: món đó đã bị xóa khỏi kho sau khi đẩy thực đơn lên. App <b>bỏ qua món đó</b> và liệt kê tên ra — nhớ <b>báo khách đổi món</b>.</div>
+<div class="snai-warn">⚠️ Báo <b>"bàn không còn trong sơ đồ"</b>: bàn đó đã bị xóa. Tạo lại bàn rồi bấm nhận lại.</div>
+<div class="snai-tip">🔕 Không nghe chuông: điện thoại đang để im lặng, hoặc tab Đơn QR chưa mở lần nào từ lúc mở app. Mở tab đó một lần là nó bắt đầu nghe.</div>`},
+
+{c:'qr',t:'Cập nhật thực đơn lên mã QR',k:'cap nhat thuc don len ma qr them mon moi doi gia khach khong thay mon',
+a:`<b class="snai-h">🔄 Cập nhật thực đơn</b>
+<div class="snai-warn">⚠️ <b>Đây là chỗ hay quên nhất.</b> Thêm món mới vào kho hoặc đổi giá thì <b>thực đơn QR KHÔNG tự đổi theo</b>. Phải bấm cập nhật một cái.</div>
+<b>🪜 Làm từng bước:</b>
+<ol>
+<li>Vào <b>Kho</b> thêm món mới / sửa giá / xóa món trước đã.</li>
+<li>Qua tab <b>Đơn QR</b>.</li>
+<li>Bấm <b>Cập nhật thực đơn lên mã</b>.</li>
+<li>Chờ vài giây, hiện <b>✅ Đã cập nhật thực đơn</b> kèm số món là xong.</li>
+</ol>
+<div class="snai-ok">✅ <b>KHÔNG phải in lại mã QR.</b> Mã dán trên bàn vẫn dùng tiếp, chỉ nội dung thực đơn bên trong được làm mới.</div>
+<b>🕐 Khi nào phải bấm cập nhật:</b>
+<ul>
+<li>Thêm món mới · Xóa món · Đổi <b>tên món</b> · Đổi <b>giá bán</b>.</li>
+<li>Vào đầu mỗi tháng — coi như kiểm tra định kỳ cho chắc.</li>
+</ul>
+<div class="snai-tip">💡 Khách báo <i>"trên máy không có món này"</i> trong khi quán vẫn bán → <b>90% là do quên bấm cập nhật</b>. Bấm một cái là xong.</div>`},
+
+{c:'qr',t:'Đổi tên quán · đổi mã QR · tắt nhận đơn',k:'doi ten quan hien cho khach doi ma qr huy ma cu tat nhan don qr',
+a:`<b class="snai-h">⚙️ Ba nút chỉnh trong Đơn QR</b>
+<b>📍 Cả ba đều nằm trong:</b> <span class="snai-path">🛒 BÁN HÀNG</span> → tab <b>Đơn QR</b>.
+<b>1️⃣ Đổi tên quán</b> — tên này hiện <b>trên đầu thực đơn khách quét thấy</b>.
+<ul><li>Bấm <b>Đổi tên quán</b> → gõ tên đẹp (VD: <i>Quán Nhậu Hai Lúa</i>) → lưu.</li></ul>
+<b>2️⃣ Bật / tắt nhận đơn</b> — nút <b>Bật nhận đơn qua mã QR</b>.
+<ul>
+<li><b>Tắt</b> khi: quán nghỉ, hết giờ phục vụ, hoặc bị khách nghịch gửi đơn phá.</li>
+<li>Tắt rồi khách quét mã vẫn <b>xem được thực đơn</b> nhưng <b>không gửi đơn được</b>.</li>
+</ul>
+<b>3️⃣ Đổi mã (huỷ mã cũ)</b> — cấp một mã hoàn toàn mới, <b>mã cũ chết luôn</b>.
+<ul>
+<li>Dùng khi: mã bị chụp đăng lên mạng, bị người ngoài gửi đơn phá liên tục.</li>
+</ul>
+<div class="snai-warn">⚠️ <b>Đổi mã xong BẮT BUỘC phải in lại và dán lại toàn bộ bàn.</b> Không dán lại thì khách quét mã cũ sẽ không gửi được đơn, mà bạn lại tưởng app hỏng.</div>
+<div class="snai-tip">💡 Bị phá lẻ tẻ thì <b>tắt nhận đơn</b> tạm thời là đủ. Chỉ khi bị phá nặng và liên tục mới nên đổi mã, vì đổi mã là phải in dán lại hết.</div>`},
+
+{c:'qr',t:'Khách quét mã không được — xử lý',k:'quet ma khong duoc loi don qr khach khong goi duoc mon mat ket noi',
+a:`<b class="snai-h">🆘 Đơn QR trục trặc</b>
+<b>📌 Khách nói "quét không ra gì":</b>
+<ol>
+<li>Bảo khách <b>mở thẳng camera điện thoại</b> rê vào mã, chờ 2 giây, <b>bấm vào dòng link hiện lên</b>. Không cần app quét mã riêng.</li>
+<li>Kiểm tra <b>mã có bị mờ, trầy, dính dầu mỡ</b> không — mờ là máy không đọc được. In lại thẻ mới.</li>
+<li>Khách <b>phải có mạng</b> (4G hoặc wifi quán). Hết dung lượng là chịu.</li>
+<li>Thử <b>chính điện thoại của bạn</b> quét thử. Bạn quét được mà khách không được → do máy khách.</li>
+</ol>
+<b>📌 Khách thấy thực đơn nhưng gửi đơn không được:</b>
+<ul>
+<li>Bạn đang <b>TẮT nhận đơn</b> → vào tab Đơn QR bật lại.</li>
+<li><b>Gói Đơn QR đã hết hạn</b> → màn hình sẽ ghi rõ ngày hết hạn. Gia hạn là chạy lại.</li>
+<li>Bạn vừa bấm <b>Đổi mã</b> mà chưa dán mã mới → khách đang quét mã chết.</li>
+</ul>
+<b>📌 Máy bạn báo "⚠️ Mất kết nối đơn QR":</b>
+<ol>
+<li><b>Thoát tab Đơn QR rồi mở lại</b> — thường là nối lại ngay.</li>
+<li>Chưa được thì <b>đóng hẳn app, mở lại</b>.</li>
+<li>Kiểm tra mạng của <b>máy tính tiền</b> (không phải máy khách).</li>
+</ol>
+<div class="snai-tip">💡 Trong lúc chờ xử lý, cứ <b>ghi món bằng tay</b> vào bàn như bình thường — bán hàng không bị đứng lại vì cái này.</div>`},
+
+/* ═════════ BỔ SUNG v2 — 💾 SAO LƯU ═════════ */
+{c:'sl',t:'Bao lâu nên sao lưu một lần? Lưu ở đâu cho chắc?',k:'bao lau sao luu mot lan luu file o dau zalo email the nho thoi quen an toan',
+a:`<b class="snai-h">📅 Lịch sao lưu nên theo</b>
+<b>👉 Nói trước:</b> dữ liệu của bạn <b>đã nằm sẵn trên máy chủ</b>, không phải trong điện thoại. Nên sao lưu <b>không phải để chống mất máy</b> — mà để chống <b>hai tình huống khác</b>:
+<ul>
+<li>Bạn (hoặc nhân viên) <b>lỡ tay xóa</b> khách hàng, xóa đơn, ghi đè dữ liệu.</li>
+<li>Bạn muốn <b>giữ một bản của riêng mình</b> để yên tâm.</li>
+</ul>
+<b>⏱️ Lịch khuyên dùng:</b>
+<ol>
+<li><b>Mỗi tuần một lần</b> — shop bình thường.</li>
+<li><b>Mỗi ngày</b> — shop đông, nhiều nhân viên, nhiều công nợ.</li>
+<li><b>Ngay lập tức</b> — trước khi làm việc nguy hiểm: nhập/phục hồi dữ liệu, dọn kho ảnh, xóa hàng loạt.</li>
+</ol>
+<b>📂 Lưu file ở đâu cho chắc — làm <u>ít nhất 2 chỗ</u>:</b>
+<ul>
+<li><b>Gửi cho chính mình qua Zalo</b> (chat "Cloud của tôi") — nhanh nhất, ai cũng làm được.</li>
+<li><b>Gửi vào email của mình</b> — giữ được lâu, không lo Zalo dọn file cũ.</li>
+<li>Chép vào <b>máy tính</b> hoặc <b>Google Drive</b> nếu bạn biết dùng.</li>
+</ul>
+<div class="snai-warn">⚠️ <b>Đừng chỉ để file trong điện thoại.</b> Mất điện thoại là mất luôn cả file sao lưu — coi như chưa sao lưu.</div>
+<div class="snai-tip">💡 Đặt tên file dễ nhìn: <code>sono-2026-05-20.json</code>. Giữ lại <b>3–4 bản gần nhất</b> rồi xóa bớt bản quá cũ.</div>
+<div class="snai-ok">✅ Bật <b>🔔 Nhắc sao lưu</b> trong <span class="snai-path">🧰 Công cụ &amp; Sao lưu</span> để app tự nhắc khi có dữ liệu mới chưa lưu.</div>`},
+
+/* ═════════ BỔ SUNG v2 — 🖨️ IN ẤN ═════════ */
+{c:'inn',t:'Không in được — kiểm tra lần lượt 6 thứ',k:'khong in duoc may in khong chay loi in bluetooth giay khong ra',
+a:`<b class="snai-h">🖨️ Không in được — dò theo thứ tự</b>
+<b>👉 Làm lần lượt từ trên xuống, đừng bỏ bước:</b>
+<ol>
+<li><b>Máy in đã bật chưa, còn pin không?</b> Đèn nguồn có sáng không. Nghe buồn cười nhưng đây là nguyên nhân số 1.</li>
+<li><b>Còn giấy không, giấy lắp đúng chiều chưa?</b> Giấy nhiệt <b>chỉ ăn một mặt</b> — lắp ngược là chạy ra giấy trắng trơn. Lật ngược cuộn giấy thử lại.</li>
+<li><b>Nắp máy in đóng khít chưa?</b> Hở nắp là không kéo giấy.</li>
+<li><b>Bluetooth của điện thoại đã bật chưa?</b> Bật rồi thì vào app bấm <b>kết nối lại máy in</b> — mất mạng hay tắt app là phải kết nối lại.</li>
+<li><b>Máy in đã ghép đôi với đúng điện thoại này chưa?</b> Một máy in nhiệt thường <b>chỉ nối được một điện thoại tại một thời điểm</b>. Điện thoại khác đang nối thì máy bạn không nối được — tắt bluetooth máy kia đi.</li>
+<li><b>Thử in bằng cách khác:</b> bấm <b>🖨 In</b> rồi chọn in qua <b>trình duyệt</b> (AirPrint/WiFi) hoặc <b>Lưu thành PDF</b> — nếu PDF ra đẹp thì lỗi nằm ở máy in, không phải ở app.</li>
+</ol>
+<div class="snai-ok">✅ <b>Vẫn bán hàng bình thường khi máy in hỏng.</b> Bấm <b>Sao chép</b> gửi hóa đơn qua Zalo, hoặc <b>🔗 Gửi link</b> cho khách xem trên điện thoại.</div>
+<div class="snai-warn">⚠️ In ra <b>chữ tiếng Việt bị mất dấu / ô vuông</b>: máy in đó không đọc được font. Trong app chọn kiểu in <b>dạng ảnh (raster)</b> — app hỗ trợ sẵn, in ra giữ nguyên dấu tiếng Việt.</div>
+<div class="snai-tip">💡 Bill in ra <b>quá mờ</b>: giấy nhiệt để lâu bị mất chất, hoặc đầu in dơ. Lau đầu in bằng cồn khô, đổi cuộn giấy mới.</div>`},
+
+/* ═════════ BỔ SUNG v2 — 🆘 SỰ CỐ ═════════ */
+{c:'loi',t:'Bấm nút mà không thấy gì xảy ra',k:'bam nut khong an gi khong phan hoi dung may treo khong bam duoc',
+a:`<b class="snai-h">😐 Bấm nút mà máy im ru</b>
+<b>👉 Làm lần lượt 5 bước, đa số dừng ở bước 1–2:</b>
+<ol>
+<li><b>Bấm mạnh và giữ lâu hơn một chút.</b> Màn hình dán kính cường lực dày hoặc tay ướt/dính dầu là hay bị hụt chạm. Lau tay khô rồi bấm lại.</li>
+<li><b>Nhìn xem có bảng nào đang mở đè lên không.</b> Có bảng đang mở thì nút phía sau <b>không bấm được</b>. Bấm <b>✕</b> hoặc <b>Đóng</b> để đóng bảng đó trước.</li>
+<li><b>Kéo màn hình xuống rồi thả</b> (tải lại trang), chờ 3 giây rồi bấm lại.</li>
+<li><b>Đóng hẳn app rồi mở lại.</b> Vuốt app ra khỏi danh sách đang chạy, đợi 5 giây, mở lại.</li>
+<li><b>Xem có phải bị chặn quyền không:</b> nếu máy hiện dòng chữ <b>"Bạn không có quyền…"</b> thì không phải lỗi — là bạn đang đăng nhập bằng <b>tài khoản nhân viên</b> hoặc vai trò bị hạn chế. Đăng nhập lại bằng tài khoản Chủ.</li>
+</ol>
+<div class="snai-tip">💡 Riêng nút <b>📷 Quét</b> mà không mở camera: máy hỏi quyền camera mà bạn lỡ bấm "Từ chối". Vào <b>Cài đặt điện thoại → Ứng dụng → Chrome (hoặc Safari) → Quyền → Camera → Cho phép</b>.</div>
+<div class="snai-warn">⚠️ Nếu <b>cả màn hình</b> không bấm được gì (đơ hẳn) → xem mục <b>"App chậm hoặc trắng màn hình"</b>.</div>`},
+
+{c:'loi',t:'Hai máy hiện số liệu khác nhau',k:'hai may khac nhau so lieu lech khong giong dong bo cham may nay co may kia khong',
+a:`<b class="snai-h">🔀 Máy này một số, máy kia một số</b>
+<b>👉 Nguyên nhân gần như luôn là một trong ba cái sau:</b>
+<ol>
+<li><b>Một máy đang mất mạng.</b> Máy đó ghi xong nhưng <b>chưa gửi lên máy chủ</b>, nên máy kia chưa thấy. Bật mạng lên, chờ vài giây là tự về.</li>
+<li><b>Hai máy đang đứng ở hai cửa hàng khác nhau.</b> Nhìn nút <b>🏪 ▾</b> góc trên bên phải màn Bán hàng — <b>tên cửa hàng có giống nhau không?</b> Khác cửa hàng thì số liệu khác là đúng.</li>
+<li><b>Đăng nhập hai email khác nhau.</b> Kiểm tra email ở mỗi máy.</li>
+</ol>
+<b>🪜 Cách xử lý chuẩn:</b>
+<ol>
+<li>Trên <b>cả hai máy</b>: bật mạng, chờ dòng chữ <b>"đang đồng bộ"</b> biến mất.</li>
+<li><b>Kéo màn hình xuống thả ra</b> để tải lại, trên cả hai máy.</li>
+<li>So lại. Vẫn lệch thì kiểm tra <b>tên cửa hàng</b> và <b>email</b> như trên.</li>
+</ol>
+<div class="snai-warn">⚠️ <b>Đừng vội nhập tay lại cho khớp!</b> Rất dễ thành ghi trùng hai lần. Chờ mạng về, số tự khớp.</div>
+<div class="snai-tip">💡 Máy bán ngoài quầy hay mất sóng: nên <b>cài app vào màn hình chính</b> (không mở bằng tab trình duyệt) — dữ liệu offline được giữ an toàn hơn nhiều.</div>`},
+
+{c:'loi',t:'App báo hết hạn dù vừa mới chuyển tiền',k:'bao het han vua chuyen tien gia han roi van khoa chua kich hoat',
+a:`<b class="snai-h">⏳ Đã chuyển tiền nhưng vẫn báo hết hạn</b>
+<b>👉 Chuyện bình thường:</b> việc mở hạn <b>do chủ phần mềm bấm duyệt bằng tay</b> sau khi thấy tiền về, <b>không tự động tức thì</b>. Chờ một chút là được.
+<b>🪜 Làm theo thứ tự:</b>
+<ol>
+<li><b>Chờ 5–10 phút</b>, rồi <b>đóng hẳn app mở lại</b> (không chỉ tải lại trang).</li>
+<li>Kiểm tra lại <b>nội dung chuyển khoản</b> trong app ngân hàng: có <b>đúng email của bạn</b> không? Nếu bạn lỡ sửa nội dung, chủ phần mềm <b>không biết tiền của ai</b>.</li>
+<li>Kiểm tra bạn chuyển đúng <b>số tài khoản hiện trên mã QR</b> chưa.</li>
+<li>Vẫn chưa được → <b>gọi hotline 0977 823 979</b>, đọc <b>email đang dùng</b> + <b>giờ chuyển khoản</b> + <b>số tiền</b>. Có ảnh chụp biên lai thì gửi Zalo.</li>
+</ol>
+<div class="snai-ok">✅ <b>Trong lúc chờ, dữ liệu vẫn nguyên vẹn.</b> Hết hạn chỉ là <b>tạm khóa cửa</b>, không xóa gì cả. Mở hạn xong vào lại là thấy đủ.</div>
+<div class="snai-warn">⚠️ <b>Tuyệt đối đừng đăng ký một email mới</b> vì tưởng mất tài khoản. Email mới là cái tủ trống, toàn bộ dữ liệu của bạn vẫn nằm ở email cũ.</div>
+<div class="snai-tip">💡 Lần sau nên gia hạn <b>trước khi hết hạn 2–3 ngày</b>. App có băng nhắc ở đầu màn hình khi còn ≤3 ngày — thấy băng đó là lo liền, đừng để đứt giữa buổi bán.</div>`},
 
 ];
 
@@ -14595,6 +15395,304 @@ function close(){
   try{ document.body.style.overflow=''; }catch(e){}
 }
 
+
+/* ═════════════ 5b) NÂNG CẤP v2 — CỠ CHỮ · ĐỌC TO · HỌC TỪ ĐẦU ═════════════
+   Chỉ GHI ĐÈ vài hàm đã khai báo ở trên, KHÔNG đụng phần còn lại.
+   Mọi thứ bọc try/catch: máy nào không hỗ trợ thì lặng lẽ bỏ qua.        */
+
+/* ---- từ đồng nghĩa bổ sung cho các mục mới ---- */
+try{
+  SYN.qr      = 'don qr quet ma ban goi mon thuc don';
+  SYN.donqr   = 'qr quet ma ban goi mon thuc don';
+  SYN.goimon  = 'don qr thuc don ban quet ma';
+  SYN.thucdon = 'menu don qr mon an';
+  SYN.hotline = 'ho tro lien he goi so dien thoai chu phan mem';
+  SYN.sku     = 'ma noi bo hang';
+  SYN.nhom    = 'nhom hang danh muc phan loai';
+  SYN.von     = 'gia von gia nhap lai';
+  SYN.dungthu = 'trial mien phi dung thu';
+  SYN.chuto   = 'co chu phong to nhin ro mat kem';
+  SYN.docto   = 'doc to nghe tieng loa';
+}catch(e){}
+
+/* ---- gợi ý nhanh ---- */
+HOT=['Cách ghi nợ cho khách','Bán hàng thế nào','Sao lưu dữ liệu','Chia sẻ link cho khách',
+     'Thêm sản phẩm','Chốt ca','Xem báo cáo lãi','In bảng kê A4','Gọi hỗ trợ khi bí'];
+
+/* ═════ CỠ CHỮ ═════ */
+var FS=0;
+function fsLoad(){ try{ FS=parseInt(localStorage.getItem('snai_fs')||'0',10)||0; }catch(e){ FS=0; } if(FS<0||FS>2)FS=0; }
+function fsApply(){
+  try{
+    var p=document.getElementById('snai-panel'); if(!p)return;
+    p.classList.remove('snai-f1'); p.classList.remove('snai-f2');
+    if(FS===1)p.classList.add('snai-f1'); else if(FS===2)p.classList.add('snai-f2');
+    var b=document.getElementById('snai-fsbtn');
+    if(b)b.innerHTML=(FS===0?'🔠 Chữ to':(FS===1?'🔠 To hơn nữa':'🔠 Về chữ thường'));
+  }catch(e){}
+}
+function fsCycle(){
+  FS=(FS+1)%3;
+  try{ localStorage.setItem('snai_fs',String(FS)); }catch(e){}
+  fsApply();
+  try{ body.scrollTop=body.scrollHeight; }catch(e){}
+}
+
+/* ═════ ĐỌC TO (máy đọc thành tiếng) ═════ */
+var TTS=false;
+function ttsOK(){ try{ return !!(window.speechSynthesis && window.SpeechSynthesisUtterance); }catch(e){ return false; } }
+function sayStop(){ try{ if(window.speechSynthesis)window.speechSynthesis.cancel(); }catch(e){} }
+function plain(html){
+  var s=String(html==null?'':html);
+  s=s.replace(/<br\s*\/?>/gi,'. ');
+  s=s.replace(/<\/(li|p|div|ol|ul|h\d)>/gi,'. ');
+  s=s.replace(/<[^>]*>/g,' ');
+  s=s.replace(/&nbsp;/g,' ').replace(/&amp;/g,' và ').replace(/&lt;/g,' ').replace(/&gt;/g,' ').replace(/&quot;/g,' ');
+  /* bỏ biểu tượng: dùng dải mã BMP + cặp thay thế — KHÔNG dùng cờ /u để máy cũ vẫn chạy */
+  s=s.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g,' ');
+  s=s.replace(/[\u2022\u00B7\u2013\u2014\u2026\u2190-\u21FF\u2300-\u27BF\u2B00-\u2BFF\uFE0E\uFE0F\u20E3]/g,' ');
+  s=s.replace(/\s*\.\s*(\.\s*)+/g,'. ');
+  s=s.replace(/\s+/g,' ').trim();
+  return s;
+}
+function viVoice(){
+  try{
+    var vs=window.speechSynthesis.getVoices()||[];
+    for(var i=0;i<vs.length;i++){ if(String(vs[i].lang||'').toLowerCase().indexOf('vi')===0) return vs[i]; }
+  }catch(e){}
+  return null;
+}
+/* Cắt thành từng đoạn ngắn rồi đọc nối tiếp — tránh lỗi đọc nửa chừng rồi tắt trên máy Android/Chrome */
+function cutText(t){
+  var out=[],cur='',w=String(t).split(' ');
+  for(var i=0;i<w.length;i++){
+    if(!w[i])continue;
+    if(cur && (cur+' '+w[i]).length>170){ out.push(cur); cur=w[i]; }
+    else cur=cur?(cur+' '+w[i]):w[i];
+    if(out.length>=40)break;
+  }
+  if(cur&&out.length<40)out.push(cur);
+  return out;
+}
+function sayText(t){
+  if(!ttsOK())return false;
+  try{
+    sayStop();
+    t=String(t||''); if(!t)return false;
+    if(t.length>5000)t=t.slice(0,5000);
+    var parts=cutText(t); if(!parts.length)return false;
+    var v=viVoice();
+    for(var i=0;i<parts.length;i++){
+      var u=new window.SpeechSynthesisUtterance(parts[i]);
+      u.lang='vi-VN'; u.rate=0.92; u.pitch=1; u.volume=1;
+      if(v)u.voice=v;
+      window.speechSynthesis.speak(u);
+    }
+    return true;
+  }catch(e){ return false; }
+}
+function sayEntry(e){ try{ if(e)sayText(plain(e.t+'. '+e.a)); }catch(x){} }
+function sayId(id){
+  for(var i=0;i<KB.length;i++) if(KB[i].id===id){ 
+    if(!sayEntry(KB[i])) push('ai','<b class="snai-h">🔇 Máy này chưa đọc được</b>Điện thoại của bạn chưa cài giọng đọc tiếng Việt. Bạn vẫn đọc chữ bình thường nhé — hoặc bấm <b>🔠 Chữ to</b> cho dễ nhìn.');
+    return;
+  }
+}
+function ttsToggle(){
+  if(!ttsOK()){
+    push('ai','<b class="snai-h">🔇 Máy này chưa đọc được</b>Điện thoại/máy tính của bạn chưa có giọng đọc tiếng Việt nên mình chưa đọc thành tiếng được.<div class="snai-tip">💡 Bạn bấm <b>🔠 Chữ to</b> ở thanh trên để phóng to chữ cho dễ đọc nhé.</div>');
+    return;
+  }
+  TTS=!TTS;
+  try{ localStorage.setItem('snai_tts',TTS?'1':'0'); }catch(e){}
+  if(!TTS)sayStop();
+  ttsBtn();
+  push('ai', TTS
+    ? '<b class="snai-h">🔊 Đã bật đọc to</b>Từ giờ mỗi câu trả lời mình sẽ <b>đọc thành tiếng</b> cho bạn nghe.<div class="snai-tip">💡 Nhớ <b>vặn to loa điện thoại</b>. Muốn tắt thì bấm lại nút <b>🔊 Đọc to</b> ở thanh trên.</div>'
+    : '<b class="snai-h">🔇 Đã tắt đọc to</b>Mình sẽ không đọc thành tiếng nữa. Muốn nghe riêng một mục thì bấm nút <b>🔊 Nghe đọc</b> ở cuối mục đó.');
+}
+function ttsBtn(){
+  try{
+    var b=document.getElementById('snai-ttsbtn'); if(!b)return;
+    b.innerHTML=TTS?'🔊 Đọc to: BẬT':'🔊 Đọc to';
+    if(TTS)b.classList.add('on'); else b.classList.remove('on');
+  }catch(e){}
+}
+
+/* ═════ KHÓA HỌC "HỌC TỪ ĐẦU" ═════ */
+var CRS=['App này gồm những gì?',
+ 'Đăng ký tài khoản mới — dùng thử 15 ngày',
+ 'Cài app vào màn hình chính điện thoại',
+ 'Thêm khách hàng mới',
+ 'Ghi khách mua hàng (ghi nợ)',
+ 'Ghi khách trả tiền (thu nợ)',
+ 'Chia sẻ link công nợ cho khách xem',
+ 'Thêm sản phẩm mới vào kho',
+ 'Bán hàng cơ bản — từ A đến Z',
+ 'Quét mã vạch để bán',
+ 'Nhập hàng từ nhà cung cấp',
+ 'Xem báo cáo doanh thu — lãi lỗ',
+ 'Sao lưu dữ liệu (nên làm thường xuyên)',
+ 'Gia hạn tài khoản — giá bao nhiêu?'];
+var CI=-1;
+function crsList(){
+  var a=[],i,j;
+  for(i=0;i<CRS.length;i++){ for(j=0;j<KB.length;j++){ if(KB[j].t===CRS[i]){ a.push(KB[j]); break; } } }
+  return a;
+}
+function goBtn(e){
+  if(e&&e.go&&typeof window[e.go]==='function')
+    return '<button type="button" class="snai-go" data-snaigo="'+e.go+'">▶ Mở ngay chức năng này</button>';
+  return '';
+}
+function sayBtn(e){
+  if(!ttsOK()||!e)return '';
+  return '<button type="button" class="snai-say" data-snaisay="'+e.id+'">🔊 Nghe đọc mục này</button>';
+}
+function crsStart(){
+  CI=0; push('me','🎓 Học từ đầu');
+  typing(function(){
+    var L=crsList();
+    push('ai','<b class="snai-h">🎓 Khóa hướng dẫn cho người mới</b>'
+     +'Mình sẽ dạy bạn <b>'+L.length+' bài</b>, đi từ dễ tới khó, <b>đúng thứ tự cần làm</b>.'
+     +'<div class="snai-ok">✅ Học xong bài nào bấm nút xanh <b>▶ Bài tiếp theo</b> ở cuối bài là qua bài kế. Không sợ lạc, không sợ sót.</div>'
+     +'<div class="snai-tip">💡 Vừa đọc vừa <b>mở app ra làm theo luôn</b> thì nhớ lâu nhất. Làm sai cũng không sao, xóa đi làm lại được.</div>'
+     +'<button type="button" class="snai-big" data-snaicourse="show">▶ Bắt đầu Bài 1</button>');
+    setChips(['Xem mục lục','Gọi hỗ trợ khi bí']);
+  });
+}
+function crsShow(){
+  var L=crsList();
+  if(!L.length){ push('ai','Chưa tải được bài học, bạn thử lại sau vài giây nhé.'); return; }
+  if(CI<0)CI=0;
+  if(CI>=L.length){
+    CI=-1;
+    push('ai','<b class="snai-h">🎉 Xong khóa hướng dẫn!</b>'
+     +'Bạn đã đi qua <b>'+L.length+' bài căn bản</b>. Tới đây là dùng app được rồi.'
+     +'<div class="snai-ok">✅ Việc nên làm ngay: <b>1)</b> Ghi thử vài khách thật · <b>2)</b> Bán thử một đơn · <b>3)</b> Bấm <b>💾 Sao lưu</b> một lần cho quen tay.</div>'
+     +'<div class="snai-tip">💡 Còn <b>'+KB.length+' mục hướng dẫn</b> khác nữa. Bấm <b>📚 Mục lục</b> ở thanh trên để xem theo nhóm, hoặc cứ gõ câu hỏi là mình tìm cho.</div>'
+     +'<button type="button" class="snai-big" data-snaiq="Xem mục lục">📚 Xem toàn bộ mục lục</button>'
+     +'<button type="button" class="snai-big alt" data-snaicourse="again">🔁 Học lại từ Bài 1</button>');
+    setChips(HOT); return;
+  }
+  var e=L[CI];
+  var nx=(CI<L.length-1)
+    ? '<button type="button" class="snai-next" data-snaicourse="next">▶ Bài '+(CI+2)+': '+esc(L[CI+1].t)+'</button>'
+    : '<button type="button" class="snai-next" data-snaicourse="next">🎉 Học xong — xem tổng kết</button>';
+  push('ai','<div class="snai-les">🎓 BÀI '+(CI+1)+' / '+L.length+'</div>'+e.a+goBtn(e)+sayBtn(e)+nx);
+  if(TTS)setTimeout(function(){ sayEntry(e); },320);
+  setChips(['Xem mục lục','Gọi hỗ trợ khi bí']);
+}
+
+/* ═════ GHI ĐÈ: câu trả lời có thêm nút nghe đọc ═════ */
+answerHtml=function(e,rel){
+  var h=e.a+goBtn(e)+sayBtn(e)+(rel||'');
+  if(TTS)setTimeout(function(){ sayEntry(e); },320);
+  return h;
+};
+
+/* ═════ GHI ĐÈ: lời chào ═════ */
+welcome=function(){
+  body.innerHTML='';
+  var pos=false; try{ var p=document.getElementById('pos-screen'); pos=!!(p&&p.classList.contains('on')); }catch(e){}
+  push('ai','<b class="snai-h">👋 Chào bạn!</b>'
+   +'Mình là <b>trợ lý hướng dẫn</b> của phần mềm này. Mình thuộc lòng <b>'+KB.length+' mục hướng dẫn</b> — từ ghi nợ, bán hàng, kho, báo cáo, cho tới sao lưu và xử lý sự cố.'
+   +'<div class="snai-ok">💬 Cứ gõ câu hỏi bằng lời bình thường vào ô dưới cùng, <b>có dấu hay không dấu đều được</b>.<br>VD: <i>"lam sao ghi no cho khach"</i> · <i>"in bang ke"</i> · <i>"quen pin"</i>.</div>'
+   +'<button type="button" class="snai-big" data-snaicourse="start">🎓 Tôi mới dùng lần đầu — dạy tôi từ đầu</button>'
+   +'<button type="button" class="snai-big alt" data-snaiq="Xem mục lục">📚 Xem toàn bộ mục lục theo nhóm</button>'
+   +'<div class="snai-tip">👴 <b>Mắt kém, ngại đọc chữ nhỏ?</b> Bấm <b>🔠 Chữ to</b> ở thanh ngay trên đây để phóng to chữ, hoặc bấm <b>🔊 Đọc to</b> để mình đọc thành tiếng cho nghe.</div>');
+  setChips(pos?['Bán hàng thế nào','Thêm sản phẩm','Chốt ca','Trả hàng','Xem báo cáo lãi','Quét mã vạch','Đơn QR tại bàn là gì']:HOT);
+};
+
+/* ═════ GHI ĐÈ: dựng giao diện (thêm thanh công cụ) ═════ */
+build=function(){
+  if(document.getElementById('snai-fab'))return;
+  var st=document.createElement('style'); st.id='snai-css'; st.textContent=CSS; document.head.appendChild(st);
+
+  fab=E('button','','<span class="snai-fi">🤖</span><span class="snai-fl">TRỢ LÝ</span>');
+  fab.id='snai-fab'; fab.type='button'; fab.title='Trợ lý hướng dẫn sử dụng';
+  try{ if(!localStorage.getItem('snai_seen')) fab.appendChild(E('span','snai-dot','?')); }catch(e){}
+  fab.addEventListener('click',open);
+  document.body.appendChild(fab);
+
+  var mask=E('div'); mask.id='snai-mask';
+  var p=E('div'); p.id='snai-panel';
+  p.innerHTML=''
+   +'<div id="snai-hd"><div class="snai-av">🤖</div>'
+   +'<div class="snai-ttl"><b>Trợ lý hướng dẫn</b><span>Hỏi bất cứ gì về app · trả lời ngay</span></div>'
+   +'<button type="button" id="snai-x">✕</button></div>'
+   +'<div id="snai-tools">'
+   +'<button type="button" class="big" data-snaitool="course">🎓 Học từ đầu</button>'
+   +'<button type="button" data-snaitool="toc">📚 Mục lục</button>'
+   +'<button type="button" id="snai-ttsbtn" data-snaitool="tts">🔊 Đọc to</button>'
+   +'<button type="button" id="snai-fsbtn" data-snaitool="fs">🔠 Chữ to</button>'
+   +'</div>'
+   +'<div id="snai-body"></div>'
+   +'<div id="snai-chips"></div>'
+   +'<div id="snai-ft"><textarea id="snai-in" rows="1" placeholder="Gõ câu hỏi… VD: cách ghi nợ cho khách"></textarea>'
+   +'<button type="button" id="snai-send">➤</button></div>';
+  mask.appendChild(p); document.body.appendChild(mask);
+  el=mask; body=p.querySelector('#snai-body'); inp=p.querySelector('#snai-in'); chips=p.querySelector('#snai-chips');
+
+  p.querySelector('#snai-x').addEventListener('click',close);
+  p.querySelector('#snai-send').addEventListener('click',function(){ send(); });
+  mask.addEventListener('click',function(e){ if(e.target===mask) close(); });
+  inp.addEventListener('keydown',function(e){
+    if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); send(); }
+  });
+  inp.addEventListener('input',function(){ inp.style.height='auto'; inp.style.height=Math.min(96,inp.scrollHeight)+'px'; });
+
+  /* Bắt mọi nút gợi ý / mục lục / công cụ bằng 1 chỗ (uỷ quyền sự kiện) */
+  p.addEventListener('click',function(e){
+    var n=e.target;
+    while(n&&n!==p){
+      if(n.getAttribute){
+        var v;
+        v=n.getAttribute('data-snaitool');
+        if(v!=null){
+          if(v==='course'){ crsStart(); }
+          else if(v==='toc'){ toc(); }
+          else if(v==='tts'){ ttsToggle(); }
+          else if(v==='fs'){ fsCycle(); }
+          return;
+        }
+        v=n.getAttribute('data-snaicourse');
+        if(v!=null){
+          if(v==='start'){ crsStart(); }
+          else if(v==='show'){ typing(function(){ crsShow(); }); }
+          else if(v==='next'){ CI=CI+1; typing(function(){ crsShow(); }); }
+          else if(v==='again'){ CI=0; typing(function(){ crsShow(); }); }
+          return;
+        }
+        v=n.getAttribute('data-snaisay');
+        if(v!=null){ sayId(parseInt(v,10)); return; }
+        if(n.getAttribute('data-snaiq')!=null){ ask(n.getAttribute('data-snaiq'),1); return; }
+        if(n.getAttribute('data-snaiid')!=null){ showId(parseInt(n.getAttribute('data-snaiid'),10),1); return; }
+        if(n.getAttribute('data-snaicat')!=null){
+          var c=n.parentNode; if(c&&c.className.indexOf('snai-cat')>=0) c.classList.toggle('on'); return;
+        }
+        if(n.getAttribute('data-snaigo')!=null){ run(n.getAttribute('data-snaigo')); return; }
+      }
+      n=n.parentNode;
+    }
+  });
+
+  /* nhớ lại cỡ chữ + trạng thái đọc to của lần dùng trước */
+  fsLoad(); fsApply();
+  try{ TTS=(localStorage.getItem('snai_tts')==='1'); }catch(e){ TTS=false; }
+  if(TTS&&!ttsOK())TTS=false;
+  ttsBtn();
+  try{ if(window.speechSynthesis&&window.speechSynthesis.getVoices)window.speechSynthesis.getVoices(); }catch(e){}
+
+  /* Nút nổi tránh đè thanh giỏ hàng / thanh tab của màn Bán hàng */
+  syncFab();
+  setInterval(syncFab,600);
+};
+
+/* ═════ GHI ĐÈ: đóng bảng thì ngừng đọc ═════ */
+var _snaiClose=close;
+close=function(){ sayStop(); try{ _snaiClose(); }catch(e){} };
+
 /* ═════════════ 6) KHỞI ĐỘNG ═════════════ */
 function boot(){ try{ build(); }catch(e){} }
 if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',boot);
@@ -14606,8 +15704,7 @@ window.moTroLy=open;
 window.SNAI_ASK=function(q){ open(); setTimeout(function(){ ask(q); },220); };
 
 }catch(e){ /* Tuyệt đối không để lỗi trợ lý ảnh hưởng app */ }
-})();
-</script>
+})();</script>
 <!-- ═══════════════ HẾT: TRỢ LÝ AI HƯỚNG DẪN ═══════════════ -->
 
 <!-- ═══════════════ BẮT ĐẦU: BỘ NÃO AI — CỐ VẤN KINH DOANH (v1.0) ═══════════════
@@ -17005,19 +18102,32 @@ body.qrd-toIn{margin:0!important;padding:0!important;background:#fff!important;m
 body.qrd-toIn>*{display:none!important}\
 body.qrd-toIn>#pos-screen{display:block!important;position:static!important;left:auto!important;top:auto!important;right:auto!important;bottom:auto!important;width:auto!important;height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important;background:#fff!important;z-index:auto!important}\
 body.qrd-toIn #pos-screen>*{display:none!important}\
-body.qrd-toIn #pos-screen>#sk-print{display:grid!important;visibility:visible!important}\
+body.qrd-toIn #pos-screen>#sk-print{display:block!important;visibility:visible!important}\
 #pos-screen #sk-print.qrd-in{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:12px;color:#000}\
 #pos-screen #sk-print.qrd-in.k58{width:58mm;padding:2mm}\
 #pos-screen #sk-print.qrd-in.k80{width:80mm;padding:3mm}\
-#pos-screen #sk-print.qrd-in.kA4,#pos-screen #sk-print.qrd-in.kA5{position:static;width:auto;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:6mm}\
+#pos-screen #sk-print.qrd-in.kA4,#pos-screen #sk-print.qrd-in.kA5{position:static;width:auto;padding:0;display:block}\
+#pos-screen #sk-print.qrd-in.kA4 .qc-r,#pos-screen #sk-print.qrd-in.kA5 .qc-r{display:block;font-size:0;line-height:0;margin-bottom:4mm;page-break-inside:avoid;break-inside:avoid}\
+#pos-screen #sk-print.qrd-in.kA5 .qc-r:nth-child(1n){page-break-after:always;break-after:page}\
+#pos-screen #sk-print.qrd-in.kA4 .qc-r:nth-child(2n){page-break-after:always;break-after:page}\
+#pos-screen #sk-print.qrd-in.kA4 .qc-r:last-child,#pos-screen #sk-print.qrd-in.kA5 .qc-r:last-child{margin-bottom:0;page-break-after:auto;break-after:auto}\
 #pos-screen #sk-print.qrd-in .qc{text-align:center;page-break-inside:avoid;break-inside:avoid}\
 #pos-screen #sk-print.qrd-in.k58 .qc,#pos-screen #sk-print.qrd-in.k80 .qc{page-break-after:always;padding:3mm 0 5mm}\
 #pos-screen #sk-print.qrd-in.k58 .qc:last-child,#pos-screen #sk-print.qrd-in.k80 .qc:last-child{page-break-after:auto}\
-#pos-screen #sk-print.qrd-in.kA4 .qc,#pos-screen #sk-print.qrd-in.kA5 .qc{border:1.5pt dashed #777;border-radius:5mm;padding:6mm 4mm}\
+#pos-screen #sk-print.qrd-in.kA4 .qc,#pos-screen #sk-print.qrd-in.kA5 .qc{display:inline-block;vertical-align:top;box-sizing:border-box;overflow:hidden;font-size:12px;line-height:1.2;border:1.5pt dashed #777;border-radius:5mm;padding:4mm}\
+#pos-screen #sk-print.qrd-in.kA5 .qc{width:63mm;height:100mm}\
+#pos-screen #sk-print.qrd-in.kA4 .qc{width:93mm;height:105mm}\
+#pos-screen #sk-print.qrd-in.kA4 .qc:first-child,#pos-screen #sk-print.qrd-in.kA5 .qc:first-child{margin-right:4mm}\
+#pos-screen #sk-print.qrd-in.kA4 .qc-q,#pos-screen #sk-print.qrd-in.kA5 .qc-q{font-size:9pt;line-height:1.2;margin-bottom:1mm}\
+#pos-screen #sk-print.qrd-in.kA4 .qc-b,#pos-screen #sk-print.qrd-in.kA5 .qc-b{font-size:18pt;line-height:1.15;margin-bottom:2mm}\
+#pos-screen #sk-print.qrd-in.kA4 .qc-b{font-size:22pt}\
+#pos-screen #sk-print.qrd-in.kA4 .qc-h,#pos-screen #sk-print.qrd-in.kA5 .qc-h{font-size:9pt;line-height:1.2;margin-bottom:1mm}\
+#pos-screen #sk-print.qrd-in.kA4 .qc-s,#pos-screen #sk-print.qrd-in.kA5 .qc-s{font-size:7pt;line-height:1.4}\
 #pos-screen #sk-print.qrd-in .qc-q{font-size:9pt;font-weight:700;margin-bottom:1mm}\
 #pos-screen #sk-print.qrd-in .qc-b{font-size:20pt;font-weight:800;line-height:1.15;margin-bottom:3mm}\
 #pos-screen #sk-print.qrd-in .qc-i{display:block;margin:0 auto 3mm;width:44mm;height:44mm}\
-#pos-screen #sk-print.qrd-in.kA4 .qc-i,#pos-screen #sk-print.qrd-in.kA5 .qc-i{width:52mm;height:52mm}\
+#pos-screen #sk-print.qrd-in.kA5 .qc-i{width:52mm;height:52mm;margin:0 auto 2mm}\
+#pos-screen #sk-print.qrd-in.kA4 .qc-i{width:60mm;height:60mm;margin:0 auto 2mm}\
 #pos-screen #sk-print.qrd-in.k80 .qc-i{width:56mm;height:56mm}\
 #pos-screen #sk-print.qrd-in .qc-h{font-size:10pt;font-weight:700;margin-bottom:1mm}\
 #pos-screen #sk-print.qrd-in .qc-s{font-size:7.5pt;line-height:1.45}\
@@ -17357,13 +18467,24 @@ async function inMa(kieu){
 
   var luuHTML = pr.innerHTML, luuClass = pr.className;
   pr.className = lop;
-  pr.innerHTML = the.map(function(t){
+  var mangThe = the.map(function(t){
     return '<div class="qc"><div class="qc-q">'+esc(quan)+'</div>'
          + '<div class="qc-b">BÀN '+esc(t.ten)+'</div>'
          + '<img class="qc-i" src="'+t.src+'" alt="">'
          + '<div class="qc-h">Quét mã để gọi món</div>'
          + '<div class="qc-s">Mở camera điện thoại rồi hướng vào mã.<br>Không cần cài ứng dụng.</div></div>';
-  }).join('');
+  });
+  if(kieu==='to'){
+    /* A4/A5: gom 2 thẻ thành 1 HÀNG khối. Hàng khối không bao giờ bị ranh giới
+       trang in cắt ngang, nên mã QR luôn in TRỌN VẸN (mất 1 ô định vị là quét
+       không ra). A5 = 4 thẻ/trang, A4 = 6 thẻ/trang. */
+    var hangThe = [];
+    for(var iH=0; iH<mangThe.length; iH+=2)
+      hangThe.push('<div class="qc-r">'+mangThe.slice(iH, iH+2).join('')+'</div>');
+    pr.innerHTML = hangThe.join('');
+  }else{
+    pr.innerHTML = mangThe.join('');
+  }
 
   setTimeout(function(){
     try{ window.print(); }catch(e){}
