@@ -3561,11 +3561,102 @@ function skCloseCart(){skq('#sk-cart-sheet').classList.remove('on');if(!skAnyMod
 function skAddMore(){skCloseCart();toast('🛒 Đơn được giữ nguyên — chọn thêm hàng rồi bấm nút giỏ để mở lại & thanh toán');}
 function skEditDiscount(){skNum('Giảm giá cả đơn (đồng)',skDiscount||0,v=>{skDiscount=Math.max(0,v);skRenderCart();});}
 
-/* ---- GIỮ ĐƠN (nhiều đơn cùng lúc) ---- */
-function skHoldOrder(){if(!skCart.length){toast('Giỏ trống');return;}skHeld.push({id:'h'+Date.now().toString(36),cart:JSON.parse(JSON.stringify(skCart)),discount:skDiscount,note:skOrderNote,when:new Date()});skCart=[];skDiscount=0;skOrderNote='';const n=skq('#sk-note');if(n)n.value='';skRenderCart();skCloseCart();toast('Đã giữ đơn ('+skHeld.length+')');}
-function skOpenHeld(){const box=skq('#sk-held-list');if(!skHeld.length)box.innerHTML='<div class="sk-empty">Chưa có đơn giữ.</div>';else box.innerHTML=skHeld.map(h=>{const tot=h.cart.reduce((s,i)=>s+i.price*i.qty,0)-(h.discount||0);return '<div class="sk-held-row"><div class="sk-held-main" data-act="held-resume" data-id="'+h.id+'"><div class="sk-row-name">'+fmt(tot)+' · '+h.cart.reduce((s,i)=>s+i.qty,0)+' món</div><div class="sk-row-sub">'+skDT(new Date(h.when))+(h.note?(' · '+escHtml(h.note)):'')+'</div></div><button class="sk-held-del" data-act="held-del" data-id="'+h.id+'">✕</button></div>';}).join('');skModalOpen('#sk-held');}
-function skResumeHeld(id){const h=skHeld.find(x=>x.id===id);if(!h)return;if(skCart.length)skHeld.push({id:'h'+Date.now().toString(36),cart:JSON.parse(JSON.stringify(skCart)),discount:skDiscount,note:skOrderNote,when:new Date()});skCart=h.cart;skDiscount=h.discount||0;skOrderNote=h.note||'';skHeld=skHeld.filter(x=>x.id!==id);skCloseModal('#sk-held');skRenderCart();const n=skq('#sk-note');if(n)n.value=skOrderNote;toast('Đã mở lại đơn');}
-function skDelHeld(id){skHeld=skHeld.filter(x=>x.id!==id);skOpenHeld();}
+/* ---- GIỮ ĐƠN (nhiều đơn cùng lúc) — GHI TÊN + LƯU LÊN FIREBASE ----
+   Kho tên "pos_held": bắt đầu bằng "pos_" nên Firestore Rules xếp vào nhóm 'sono_pos'
+   qua appCua() → KHÔNG cần sửa rules, dùng được ngay (giống pos_audit / pos_tables).
+   • Theo TỪNG CHI NHÁNH (bcol/bdoc) — mọi máy, mọi nhân viên của chi nhánh đó đều thấy.
+   • Mất mạng vẫn giữ / mở lại bình thường: Firestore ghi vào cache máy rồi tự đẩy lên khi có mạng.
+   • Ghi hụt (hết hạn / sai rules) thì TRẢ LẠI GIỎ HÀNG, tuyệt đối không để mất đơn. */
+var skHoldWho='',skHoldWhoId='',skHoldRef=null,skUnsubHeld=null,skResumeBusy=false;
+function skHeldCol(){return bcol('pos_held');}
+function skHeldDoc(id){return bdoc('pos_held',id);}
+function skHeldLines(){return skCart.map(function(c){return {key:String(c.key||''),id:String(c.id||''),name:String(c.name||''),unit:String(c.unit||''),ratio:Number(c.ratio)||1,price:Number(c.price)||0,cost:Number(c.cost)||0,qty:Number(c.qty)||0,baseQty:Number(c.baseQty)||0};});}
+function skHeldPush(who,whoId,lines,disc,note){var _st=null;try{_st=(typeof skStaff!=='undefined'&&skStaff)?skStaff:null;}catch(e){}
+  return addDoc(skHeldCol(),{who:(who||'').trim(),whoId:whoId||'',cart:lines||[],discount:Number(disc)||0,note:note||'',byId:_st?(_st.id||''):'',byName:_st?(_st.name||'Chủ'):'Chủ',createdAtMs:Date.now(),at:serverTimestamp()});}
+function skHeldOk(p,ctx){   /* chờ máy chủ tối đa 3 giây khi ĐANG CÓ MẠNG; mất mạng thì coi như đã xếp hàng chờ gửi */
+  try{
+    var off=(typeof navigator!=='undefined'&&navigator&&navigator.onLine===false);
+    if(off){p.catch(function(e){skErr(e,ctx);});return Promise.resolve(true);}
+    return Promise.race([p.then(function(){return true;},function(e){skErr(e,ctx);return false;}),
+                         new Promise(function(r){setTimeout(function(){r(true);},3000);})]);
+  }catch(e){skErr(e,ctx);return Promise.resolve(false);}
+}
+function skHeldBadge(){try{const b=skq('#pos-screen [data-act="held-list"]');if(b)b.textContent='🗂️ Đơn giữ'+(skHeld.length?(' ('+skHeld.length+')'):'');}catch(e){}}
+function skHeldSubs(){
+  if(skUnsubHeld){try{skUnsubHeld();}catch(e){}skUnsubHeld=null;}
+  skHeld=[];skHeldBadge();
+  try{skUnsubHeld=onSnapshot(query(skHeldCol(),orderBy('createdAtMs','asc'),limit(200)),function(s){
+    skHeld=s.docs.map(function(d){const v=d.data()||{};return {id:d.id,who:v.who||'',whoId:v.whoId||'',cart:Array.isArray(v.cart)?v.cart:[],discount:Number(v.discount)||0,note:v.note||'',byName:v.byName||'',createdAtMs:Number(v.createdAtMs)||0};});
+    skHeldBadge();const m=skq('#sk-held');if(m&&m.classList.contains('on'))skRenderHeld();
+  },function(e){skErr(e,'Đọc đơn giữ');});}catch(e){}
+}
+try{skBranchSubs=(function(_o){return function(){let r;try{r=_o.apply(this,arguments);}finally{try{skHeldSubs();}catch(e){}}return r;};})(skBranchSubs);}catch(e){}
+/* Đơn giữ đã nằm trên Firebase ⇒ không còn là "việc chưa lưu" nên thôi chặn bộ tự cập nhật.
+   Giỏ hàng / phiếu nhập / modal đang mở thì VẪN chặn y như cũ. */
+try{setTimeout(function(){try{const _b=window.__skBusy;if(typeof _b!=='function')return;window.__skBusy=function(){const s=skHeld;skHeld=[];try{return _b();}finally{skHeld=s;}};}catch(e){}},0);}catch(e){}
+function skHoldWhoChips(){const box=skq('#sk-hw-list');if(!box)return;const cs=(typeof customers!=='undefined'&&customers)?customers:[];const si=skq('#sk-hw-search');const qx=si?skKD(si.value||''):'';const list=(qx?cs.filter(c=>skKD(c.name||'').includes(qx)):cs).slice(0,60);box.innerHTML=cs.length?(list.length?list.map(c=>'<button class="sk-chip" data-hwid="'+escHtml(c.id||'')+'" data-hwname="'+escHtml(c.name||'')+'">'+escHtml(c.name||'')+'</button>').join(''):'<div class="sk-mut">Không thấy khách phù hợp — gõ tên bên dưới.</div>'):'<div class="sk-mut">Chưa có khách quen — gõ tên bên dưới.</div>';}
+function skHoldWhoBox(){
+  let d=skq('#sk-holdwho');if(d)return d;
+  const host=skq('#pos-screen');if(!host)return null;
+  d=document.createElement('div');d.id='sk-holdwho';d.className='sk-modal';
+  d.innerHTML='<div class="sk-card"><h3>🗂️ Giữ đơn cho ai?</h3>'
+    +'<input id="sk-hw-search" class="sk-inp" placeholder="🔍 Tìm khách đã lưu…" autocomplete="off" style="margin-bottom:10px">'
+    +'<div id="sk-hw-list" class="sk-chips" style="max-height:34vh;overflow-y:auto"></div>'
+    +'<label class="sk-fld">Hoặc gõ tên người giữ đơn<input id="sk-hw-name" class="sk-inp" placeholder="VD: Anh Tư — giao chiều nay"></label>'
+    +'<div class="sk-card-acts"><button class="sk-btn ghost" id="sk-hw-skip">Không ghi tên</button><span style="flex:1"></span><button class="sk-btn ghost" id="sk-hw-cancel">Hủy</button><button class="sk-btn green" id="sk-hw-ok">Giữ đơn</button></div></div>';
+  host.appendChild(d);
+  d.querySelector('#sk-hw-search').addEventListener('input',skHoldWhoChips);
+  d.querySelector('#sk-hw-list').addEventListener('click',function(e){const b=e.target.closest('[data-hwname]');if(!b)return;skDoHold(b.getAttribute('data-hwname')||'',b.getAttribute('data-hwid')||'');});
+  d.querySelector('#sk-hw-ok').addEventListener('click',function(){const nm=((skq('#sk-hw-name')||{}).value||'').trim()||((skq('#sk-hw-search')||{}).value||'').trim();skDoHold(nm,'');});
+  d.querySelector('#sk-hw-skip').addEventListener('click',function(){skDoHold('','');});
+  d.querySelector('#sk-hw-cancel').addEventListener('click',function(){skCloseModal('#sk-holdwho');});
+  d.querySelector('#sk-hw-name').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();const b=skq('#sk-hw-ok');if(b)b.click();}});
+  return d;
+}
+function skHoldOrder(){if(!skCart.length){toast('Giỏ trống');return;}const box=skHoldWhoBox();if(!box){skDoHold('','');return;}const w=(skHoldRef===skCart)?(skHoldWho||''):'';const s=skq('#sk-hw-search');if(s)s.value='';const n=skq('#sk-hw-name');if(n)n.value=w;skHoldWhoChips();skModalOpen('#sk-holdwho');}
+function skDoHold(who,whoId){
+  if(!skCart.length){toast('Giỏ trống');return;}
+  who=(who||'').trim();
+  const lines=skHeldLines(),_bakCart=skCart.slice(),_bakDisc=skDiscount,_bakNote=skOrderNote;
+  try{skHeldPush(who,whoId,lines,_bakDisc,_bakNote).catch(function(e){skErr(e,'Giữ đơn');
+    try{if(!skCart.length){skCart=_bakCart;skDiscount=_bakDisc;skOrderNote=_bakNote;const _n=skq('#sk-note');if(_n)_n.value=_bakNote||'';skRenderCart();skRenderGrid();toast('⚠️ Đơn CHƯA giữ được — đã trả lại giỏ hàng');}}catch(_){}});}
+  catch(e){skErr(e,'Giữ đơn');return;}   /* lỗi ngay lúc ghi ⇒ giữ nguyên giỏ, không xoá gì cả */
+  skCart=[];skDiscount=0;skOrderNote='';skHoldWho='';skHoldWhoId='';skHoldRef=null;
+  const n=skq('#sk-note');if(n)n.value='';
+  if(skq('#sk-holdwho'))skCloseModal('#sk-holdwho');
+  skRenderCart();skCloseCart();
+  toast(who?('Đã giữ đơn cho: '+who):'Đã giữ đơn');
+}
+function skRenderHeld(){const box=skq('#sk-held-list');if(!box)return;
+  if(!box._hwb){box.addEventListener('click',function(e){const b=e.target.closest('[data-hwedit]');if(!b)return;e.stopPropagation();const hid=b.getAttribute('data-hwedit');const h=skHeld.find(x=>x.id===hid);if(!h)return;skNum('Đơn này giữ cho ai?',h.who||'',null,{text:true,onText:function(v){updateDoc(skHeldDoc(hid),{who:String(v||'').trim(),whoId:''}).catch(function(e){skErr(e,'Sửa tên đơn giữ');});}});});box._hwb=true;}
+  if(!skHeld.length)box.innerHTML='<div class="sk-empty">Chưa có đơn giữ.</div>';else box.innerHTML=skHeld.map(h=>{const tot=(h.cart||[]).reduce((s,i)=>s+i.price*i.qty,0)-(h.discount||0);const who=(h.who||'').trim();return '<div class="sk-held-row"><div class="sk-held-main" data-act="held-resume" data-id="'+h.id+'"><div class="sk-row-name">'+(who?('👤 '+escHtml(who)+' · '):'')+fmt(tot)+' · '+(h.cart||[]).reduce((s,i)=>s+i.qty,0)+' món</div><div class="sk-row-sub">'+skDT(new Date(Number(h.createdAtMs)||Date.now()))+(h.note?(' · '+escHtml(h.note)):'')+(h.byName?(' · '+escHtml(h.byName)):'')+'</div></div><button class="sk-held-del" data-hwedit="'+h.id+'" title="Sửa tên" style="background:#eef6f2;color:#0d7a5f">✎</button><button class="sk-held-del" data-act="held-del" data-id="'+h.id+'">✕</button></div>';}).join('');}
+function skOpenHeld(){skRenderHeld();skModalOpen('#sk-held');}
+async function skResumeHeld(id){
+  if(skResumeBusy)return;skResumeBusy=true;
+  try{
+    const h=skHeld.find(x=>x.id===id);if(!h)return;
+    const lines=JSON.parse(JSON.stringify(h.cart||[])),disc=h.discount||0,note=h.note||'',who=h.who||'',whoId=h.whoId||'';
+    if(skCart.length){   /* giỏ đang có hàng ⇒ GIỮ ĐƠN CŨ TRƯỚC, chắc chắn cất xong mới mở đơn khác (không để mất hàng trong giỏ) */
+      const _w=(skHoldRef===skCart)?(skHoldWho||''):'',_wi=(skHoldRef===skCart)?(skHoldWhoId||''):'';
+      let ok=false;try{ok=await skHeldOk(skHeldPush(_w,_wi,skHeldLines(),skDiscount,skOrderNote),'Giữ đơn đang bán');}catch(e){ok=false;}
+      if(!ok){toast('⚠️ Chưa giữ được đơn đang bán — KHÔNG mở đơn khác, giỏ hàng còn nguyên');return;}
+      skCart=[];skDiscount=0;skOrderNote='';skHoldWho='';skHoldWhoId='';skHoldRef=null;
+      const _n0=skq('#sk-note');if(_n0)_n0.value='';skRenderCart();
+    }
+    /* Xóa đơn trên máy chủ: KHÔNG bắt chờ (mất mạng vẫn mở đơn được ngay).
+       Hụt thì chỉ dư một dòng trong danh sách — có cảnh báo, không mất hàng. */
+    try{deleteDoc(skHeldDoc(id)).catch(function(e){skErr(e,'Mở lại đơn giữ');toast('⚠️ Đơn giữ chưa xóa được trên máy chủ — coi chừng bán trùng, xóa tay dòng đó');});}catch(e){skErr(e,'Mở lại đơn giữ');}
+    skCart=lines;skDiscount=disc;skOrderNote=note;skHoldWho=who;skHoldWhoId=whoId;skHoldRef=skCart;
+    skCloseModal('#sk-held');skRenderCart();
+    const n=skq('#sk-note');if(n)n.value=skOrderNote;
+    toast(skHoldWho?('Đã mở lại đơn của: '+skHoldWho):'Đã mở lại đơn');
+  }catch(e){skErr(e,'Mở lại đơn giữ');}
+  finally{skResumeBusy=false;}
+}
+function skDelHeld(id){const h=skHeld.find(x=>x.id===id);if(!h)return;
+  const tot=(h.cart||[]).reduce((s,i)=>s+i.price*i.qty,0)-(h.discount||0);
+  if(!confirm('Xóa đơn giữ'+((h.who||'').trim()?(' của '+h.who):'')+' — '+fmt(tot)+'?\nMọi máy sẽ mất đơn này, không lấy lại được.'))return;
+  deleteDoc(skHeldDoc(id)).catch(function(e){skErr(e,'Xóa đơn giữ');});}
 
 /* ---- ĐƠN HÀNG + TRẢ HÀNG ---- */
 let skOdId=null;
@@ -4543,6 +4634,10 @@ function skAfterReady(){skLoadCn();skRenderBranchSel();skBranchSubs();if(skStaff
 function skBranchSubs(){
   if(skUnsubBP){try{skUnsubBP();}catch(e){}skUnsubBP=null;}if(skUnsubBO){try{skUnsubBO();}catch(e){}skUnsubBO=null;}if(skUnsubBR){try{skUnsubBR();}catch(e){}skUnsubBR=null;}
   skProducts=[];skOrders=[];skReturns=[];
+  /* [VÁ] Xoá luôn LƯỚI cũ trên màn hình. Trước chỉ xoá biến mà không vẽ lại:
+     cửa hàng mới đọc kho lỗi / chưa về là màn hình còn nguyên hàng của cửa
+     hàng trước ⇒ nhìn y như hai cửa hàng chung kho. */
+  try{skRenderGrid();}catch(e){} try{skRenderKho();}catch(e){}
   try{skUnsubBP=onSnapshot(bcol('products'),s=>{skProducts=s.docs.map(d=>Object.assign({id:d.id},d.data()));skRenderGrid();skRenderKho();skRenderNpPick();if(skView==='report')skRenderReport();},(e)=>skErr(e,'Đọc kho'));}catch(e){}
   try{skUnsubBO=onSnapshot(query(bcol('orders'),orderBy('createdAt','desc'),limit(300)),s=>{skOrders=s.docs.map(d=>Object.assign({id:d.id},d.data()));if(skView==='report')skRenderReport();},(e)=>skErr(e,'Đọc đơn hàng'));}catch(e){}
   try{skUnsubBR=onSnapshot(query(bcol('returns'),orderBy('at','desc'),limit(300)),s=>{skReturns=s.docs.map(d=>Object.assign({id:d.id},d.data()));if(skView==='report')skRenderReport();},()=>{});}catch(e){}
@@ -4564,6 +4659,7 @@ function skRenderBranches(){const box=skq('#sk-branch-list');if(!box)return;box.
   return '<div class="sk-row"><div class="sk-row-main" data-act="branch-switch" data-id="'+b.id+'">'
     +'<div class="sk-row-name">'+(b.id===skBranch?'✓ ':'')+((skStaff&&!skStfCoBr(skStaff,b.id)&&!skBrMoKhoaCa(b.id))?'🔒 ':'')+skNganhIconBr(b.id)+' '+escHtml(b.name)+'</div>'
     +'<div class="sk-row-sub">'+tn+' · '+(b.id===skBranch?'<b>Đang mở</b>':'Chạm để mở')+'</div>'
+    +'<div class="sk-row-sub" style="font-size:11px;color:#8a97a3">mã: <b>'+escHtml(b.id)+'</b></div>'
     +'</div><button class="sk-btn ghost sk-owner" data-act="branch-edit" data-id="'+b.id+'">✎</button></div>';
 }).join('');}
 function skSwitchBranch(id){if(skStaff&&!skStfCoBr(skStaff,id)&&!skBrMoKhoaCa(id)){toast('🔒 Bạn chỉ được bán ở: '+skStfBrTen(skStaff));skCloseModal('#sk-branch');return;}if(!skBranchAllowed(id)){skCloseModal('#sk-branch');skCnUpsell(true);return;}if(id===skBranch){skCloseModal('#sk-branch');return;}
@@ -8145,12 +8241,25 @@ function soatTaiKhoan(){
 }
 
 /* ---------- GOM: lưu bản sao ---------- */
+/* [VÁ] Đã CHẮC chi nhánh chưa? Lúc trang vừa tải skBranch còn là 'main' mặc định,
+   đọc/ghi kho cứu hộ lúc đó là ghi nhầm khoá của cửa hàng khác. Chỉ tin khi đã có
+   listener kho của chi nhánh VÀ skBranch khớp cửa hàng máy đang nhớ. */
+function brSan(){
+  try{
+    if(!(typeof skUnsubBP!=='undefined' && skUnsubBP)) return false;
+    var u=uidNow(); if(!u) return false;
+    var b=(typeof skBranch!=='undefined'&&skBranch)?String(skBranch):'';
+    if(!b) return false;
+    var nho=''; try{ nho=localStorage.getItem('sk_br_'+u)||''; }catch(e){}
+    return nho ? (b===nho) : true;
+  }catch(e){ return false; }
+}
 function gom(){
   try{
     if(!uidNow()) return;                              /* chưa đăng nhập: không lưu, không nhớ gì */
     if(typeof customers!=='undefined' && customers && customers.length) luu('customers',customers);
     var b=(typeof skBranch!=='undefined'&&skBranch)?skBranch:'main';
-    if(typeof skProducts!=='undefined' && skProducts && skProducts.length) luu('sp:'+b,skProducts);
+    if(brSan() && typeof skProducts!=='undefined' && skProducts && skProducts.length) luu('sp2:'+b,skProducts);
     if(typeof skSuppliers!=='undefined' && skSuppliers && skSuppliers.length) luu('ncc',skSuppliers);
     if(typeof skBranches!=='undefined' && skBranches && skBranches.length) luu('cn',skBranches);
     if(typeof skShopBank!=='undefined' && skShopBank && skShopBank.account)
@@ -8183,10 +8292,11 @@ function dem(){
 function ve(){
   try{
     if(!uidNow()) return;                              /* chưa đăng nhập: TUYỆT ĐỐI không dựng lại gì */
-    var bk='sp:'+((typeof skBranch!=='undefined'&&skBranch)?skBranch:'main');
-    nap('customers'); nap('ncc'); nap('cn'); nap('shop'); nap(bk);
+    var _bs=brSan();   /* [VÁ] chưa chắc chi nhánh thì TUYỆT ĐỐI không đụng kho */
+    var bk='sp2:'+((typeof skBranch!=='undefined'&&skBranch)?skBranch:'main');   /* [VÁ] đổi tiền tố: bỏ hẳn khoá 'sp:' đã nhiễm sẵn trong máy */
+    nap('customers'); nap('ncc'); nap('cn'); nap('shop'); if(_bs) nap(bk);
 
-    var _cus=lay('customers'), _sp=lay(bk), _ncc=lay('ncc'), _cn=lay('cn'), _shop=lay('shop');
+    var _cus=lay('customers'), _sp=_bs?lay(bk):null, _ncc=lay('ncc'), _cn=lay('cn'), _shop=lay('shop');
 
     if(typeof customers!=='undefined' && !_svCus && customers.length===0 && Array.isArray(_cus) && _cus.length){
       customers=_cus.slice();
@@ -12582,7 +12692,7 @@ a:`<b class="snai-h">🗂️ Giữ đơn</b>
 <b>🪜 CÁCH GIỮ ĐƠN:</b>
 <ol>
 <li>Đang có hàng trong giỏ → bấm <b>thanh xanh dưới đáy</b> để mở giỏ.</li>
-<li>Tìm nút <b>Giữ đơn</b> → bấm vào.</li>
+<li>Tìm nút <b>Giữ đơn</b> → bấm vào → hiện hộp <b>“Giữ đơn cho ai?”</b>: chạm tên khách quen, hoặc gõ tên người đặt (không cần ghi thì bấm <b>Không ghi tên</b>).</li>
 <li><b>Giỏ hàng trống ra ngay</b>. Bây giờ bán cho khách khác bình thường.</li>
 </ol>
 <b>🪜 CÁCH LẤY LẠI ĐƠN ĐÃ GIỮ:</b>
@@ -12590,11 +12700,13 @@ a:`<b class="snai-h">🗂️ Giữ đơn</b>
 <li>Về tab <b>Bán</b>.</li>
 <li>Tìm nút <b>🗂️ Đơn giữ</b> → bấm vào.</li>
 <li>Hiện ra danh sách các đơn đang treo → <b>chạm vào đơn cần lấy lại</b>.</li>
+<li>Mỗi đơn hiện <b>👤 tên người giữ</b> — bấm <b>✎</b> để sửa tên nếu lúc giữ chưa ghi.</li>
 <li>Toàn bộ hàng trong đơn đó <b>quay lại giỏ</b> y nguyên như lúc cất.</li>
 <li>Tiếp tục bán và thanh toán bình thường.</li>
 </ol>
 <div class="snai-ok">✅ <b>Giữ được NHIỀU đơn cùng lúc</b> — quán đông khách vẫn không rối.</div>
-<div class="snai-tip">💡 Đơn nào khách bỏ không lấy nữa thì bấm dấu <b>✕</b> bên cạnh đơn đó để xóa cho gọn danh sách.</div>`},
+<div class="snai-ok">✅ <b>Đơn giữ lưu trên máy chủ</b> — máy nào, nhân viên nào trong chi nhánh cũng thấy và lấy lại được; tắt app hay đổi máy vẫn còn. Mất mạng vẫn giữ/lấy lại bình thường, có mạng lại tự đồng bộ.</div>
+<div class="snai-tip">💡 Đơn nào khách bỏ không lấy nữa thì bấm dấu <b>✕</b> bên cạnh đơn đó để xóa cho gọn danh sách (hỏi xác nhận trước, vì xóa là mất trên mọi máy).</div>`},
 
 {c:'bh',t:'Xem lại đơn hàng đã bán',k:'xem don hang da ban lich su don hang tim don hoa don cu',
 a:`<b class="snai-h">📋 Đơn hàng đã bán</b>
@@ -17397,7 +17509,19 @@ window.AIB={ hoi:function(t){ try{ M.go('aib'); }catch(e){} setTimeout(function(
         }
       }
     }
-    if(k===cur()){ close(); go(); return; }
+    /* [VÁ] Ngành ĐANG MỞ phải suy từ MÃ cửa hàng SẼ MỞ, KHÔNG lấy theo cờ.
+       Cờ nạp lúc POS chưa khởi động (skBranch còn là 'main') nên cur() luôn trả ''
+       ⇒ bấm 🛒 đa năng bị thoát sớm, mở lại đúng cửa hàng ngành cũ (chung kho). */
+    var _maMo='', _ngMo=null, _mm=null;
+    try{ _maMo=localStorage.getItem(brKey(uid()))||''; }catch(e){}
+    if(!_maMo){ try{ _maMo=s.core.branch()||''; }catch(e){} }
+    if(_maMo){
+      _mm=/^main_(fnb|fs|rm|kg)$/.exec(_maMo)||/^cn_(fnb|fs|rm|kg)_[0-9]+$/.exec(_maMo);
+      if(_mm) _ngMo=_mm[1];
+      else if(_maMo==='main'||/^cn_[0-9]+$/.test(_maMo)) _ngMo='';
+    }
+    if(_ngMo===k){ close(); go(); return; }                 /* đã đúng cửa hàng của ngành này */
+    if(_ngMo===null&&k===cur()){ close(); go(); return; }   /* mã cũ không suy được: giữ y cách cũ */
     if(!laChu()){ say('🔒 Chỉ CHỦ shop mới đổi được ngành nghề'); close(); go(); return; }
     if(navigator.onLine===false){ msg='📴 Không có mạng — chưa đổi được ngành nghề. Bật mạng rồi chọn lại.'; draw(); return; }
     await apDung(k);
