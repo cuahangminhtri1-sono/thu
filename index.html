@@ -1684,6 +1684,8 @@ document.getElementById('pass-input').addEventListener('keydown',e=>{if(e.key===
 
 const ADMIN_EMAIL='cuahangminhtri1@gmail.com';
 function isAdmin(){return auth.currentUser && (auth.currentUser.email||'').toLowerCase()===ADMIN_EMAIL;}
+/* [VÁ] Công bố ra ngoài để module khác KHÔNG phải đoán admin bằng cách nhìn nút trên màn hình. */
+window.snLaAdmin=function(){try{return !!isAdmin();}catch(e){return false;}};
 // Đọc 1 doc hạn (dùng chung cho lic/{app} MỚI và doc gốc CŨ)
 function _hanInfo(d){
   if(!d)return null;
@@ -6636,6 +6638,18 @@ try { window.__skBusy = function(){
 
   var VIEW='main', SHIFTS=[], LOGS=[], UNS=null, UNL=null, SUBBR=null, RDY=false,
       DETID=null, BUSY=false, WIN=null, BOUND=false, LOGVIEW=null, CAID=null;
+  /* [VÁ v9] Các biến của phần "bán offline" trước đây BỊ THIẾU KHAI BÁO ⇒ trong
+     <script type="module"> (luôn chạy strict) mọi lần chạm tới là ReferenceError:
+       • laOffline() ném lỗi  ⇒ CHỐT CA hỏng khi máy đang CÓ MẠNG
+       • setInterval(nhipTim,NHIP_MS) không chạy ⇒ mất nhịp tim của ca
+       • caGhiDonMoi()/caChoPhepBan() luôn rơi vào catch ⇒ trần bán offline vô hiệu
+     Khai báo lại đúng chỗ, giá trị đặt RỘNG để không chặn oan ai. */
+  var ACK = Date.now();   /* lần cuối máy chủ xác nhận ghi được */
+  var NOFF = 0;           /* số đơn bán lúc mất mạng, chưa gửi về máy chủ */
+  var OFF_MS   = 360000;  /* quá 6 phút không liên lạc được máy chủ ⇒ coi là mất mạng */
+  var NHIP_MS  = 120000;  /* 2 phút ghi một nhịp tim lên ca đang mở */
+  var CAP_DON  = 50;      /* trần: dồn quá 50 đơn chưa gửi thì ngưng bán */
+  var CAP_PHUT = 180;     /* trần: mất mạng quá 180 phút mà còn đơn tồn thì ngưng bán */
   /* [KHO CA] trạng thái màn Đối chiếu kho */
   var KHOV=null, KHOMAP={}, CNT={}, KHOQ='', KHOF='all', KHOLIM=400, KHOFOCUS=false, KHOT=null;
 
@@ -7206,6 +7220,11 @@ try { window.__skBusy = function(){
   }
 
   /* — chưa mở ca — */
+  /* [VÁ] render() có nhánh VIEW==='open' gọi vOpen() nhưng hàm này không tồn tại
+     trong file (tàn dư bản cũ). Hiện VIEW không bao giờ nhận 'open' nên chưa nổ,
+     nhưng để nguyên là quả mìn. Trả về đúng màn mở ca hiện hành (vIdle). */
+  function vOpen(){ return vIdle(); }
+
   function vIdle(){
     var last=null;for(var i=0;i<SHIFTS.length;i++){if(SHIFTS[i].status==='closed'){last=SHIFTS[i];break;}}
     var sug=last?R(last.openFloat):0;
@@ -8712,6 +8731,201 @@ window.SKMOD=API;
 })();
 /* ═══════════════ HẾT: SKMOD v1 ═══════════════ */
 
+/* ═══════════════ KÉT NGÀNH (SKNG) — KHOÁ CỨNG 3 GÓI fs · rm · kg ═══════════════
+   VÌ SAO CÓ KHỐI NÀY:
+   Ba ngành Thời trang (fs) · Phòng tính giờ (rm) · Cân ký (kg) trước đây cất dữ
+   liệu riêng của mình NGAY TRONG kho 'products' — kho dùng chung với bán hàng đa
+   năng. Firestore Rules chặn theo TÊN KHO, nên không tài nào tách ra để khoá:
+   khách hết hạn gói ngành vẫn đọc được biến thể / bậc giá / phòng và bán bình
+   thường. Gói F&B khoá cứng được là nhờ nó có kho riêng 'pos_tables'.
+
+   NAY: mỗi ngành có KÉT RIÊNG, đặt cạnh kho của cửa hàng đang mở:
+        pos_fnb/{productId} = { b:[định lượng NVL] }
+        pos_fs/{productId}  = { v:[biến thể] }
+        pos_kg/{productId}  = { t:[bậc giá] }
+        pos_rm/{productId}  = { rate, min, openAt, cart }
+   Rules đòi đúng gói ngành mới cho đọc/ghi 3 kho này ⇒ hết hạn là máy chủ chối,
+   không phải chỉ ẩn nút ở máy khách.
+
+   BA LỚP AN TOÀN — dán vào KHÔNG ai mất dữ liệu:
+   1) CHUYỂN KÉT TỰ ĐỘNG: mở két được thì dữ liệu cũ trong 'products' tự sang két,
+      sang xong mới dọn chỗ cũ. Ghi trước, dọn sau — đứt mạng giữa chừng thì lần
+      sau chạy tiếp, không mất gì.
+   2) CHƯA BIẾT THÌ KHÔNG KHOÁ: đang nạp, mất mạng, lỗi lạ ⇒ vẫn dùng dữ liệu cũ.
+      CHỈ khoá khi máy chủ nói thẳng 'permission-denied' (hết hạn gói).
+   3) Kho 'products' không bị đụng tới một chữ nào ngoài đúng mấy trường của ngành.
+   ═══════════════════════════════════════════════════════════════════════════════ */
+(function(){
+if(!window.SKMOD)return;
+var M=window.SKMOD,C=M.core,F=M.fb;
+
+var KHO={fnb:'pos_fnb',fs:'pos_fs',rm:'pos_rm',kg:'pos_kg'};
+var MAP={},TT={},UNS={},CB={},DIXONG={},BR={},DEM={};
+/* TT[ns]: 'cho' = đang nạp · 'ok' = két mở · 'khoa' = máy chủ chối · 'loi' = trục trặc mạng */
+
+function brNow(){ try{ return C.branch()||'main'; }catch(e){ return 'main'; } }
+function uidNow(){ try{ return C.uid()||''; }catch(e){ return ''; } }
+
+/* ---------- BẢN SAO TRONG MÁY ----------
+   Sau khi chuyển két, dữ liệu ngành không còn nằm trong 'products' nữa. Mở app
+   lúc mất mạng thì két chưa về kịp ⇒ phải có bản sao trong máy, nếu không khách
+   tưởng mất sạch phòng / biến thể. Nhưng máy chủ nói HẾT HẠN thì bản sao bị xoá
+   ngay — khoá cứng là khoá cứng, không có cửa lách qua bộ nhớ máy. */
+function cKey(ns){ return 'skng_'+uidNow()+'_'+brNow()+'_'+ns; }
+function cLuu(ns){
+  try{
+    var t=JSON.stringify(MAP[ns]||{});
+    if(t.length>900000)return;                    /* quá to thì thôi, không nhét localStorage */
+    localStorage.setItem(cKey(ns),t);
+  }catch(e){}
+}
+function cDoc(ns){
+  try{ var t=localStorage.getItem(cKey(ns)); return t?(JSON.parse(t)||{}):null; }catch(e){ return null; }
+}
+function cXoa(ns){ try{ localStorage.removeItem(cKey(ns)); }catch(e){} }
+
+function bao(ns){
+  var L=CB[ns]||[];
+  for(var i=0;i<L.length;i++){ try{ L[i](); }catch(e){} }
+}
+
+/* Mở két của một ngành. Đổi cửa hàng thì gọi lại — két gắn theo cửa hàng. */
+function mo(ns){
+  if(!KHO[ns])return;
+  var b=brNow();
+  if(UNS[ns]&&BR[ns]===b)return;
+  dong(ns);
+  BR[ns]=b; TT[ns]='cho'; MAP[ns]={}; DIXONG[ns]=false; DEM[ns]=0;
+  try{
+    var cu=cDoc(ns); if(cu)MAP[ns]=cu;               /* dùng tạm bản sao trong máy cho tới khi máy chủ trả lời */
+    UNS[ns]=F.onSnapshot(C.col(KHO[ns]),function(s){
+      var m={}; s.forEach(function(d){ m[d.id]=d.data()||{}; });
+      MAP[ns]=m; TT[ns]='ok'; cLuu(ns); bao(ns); chuyenKet(ns);
+    },function(e){
+      var ma=(e&&e.code)||'';
+      if(ma==='permission-denied'){ TT[ns]='khoa'; MAP[ns]={}; cXoa(ns); }
+      else TT[ns]='loi';
+      bao(ns);
+    });
+  }catch(e){ TT[ns]='loi'; }
+}
+function dong(ns){
+  try{ if(UNS[ns])UNS[ns](); }catch(e){}
+  UNS[ns]=null;
+}
+
+/* ---------- ĐỌC ----------
+   Hết hạn (khoa) ⇒ trả rỗng, module coi như ngành đó không có dữ liệu nào.
+   Chưa nạp xong / lỗi mạng ⇒ trả tạm dữ liệu cũ để khách không thấy trống trơn. */
+function ket(ns,pid){ var m=MAP[ns]; return (m&&m[pid])||null; }
+function khoa(ns){ return (TT[ns]||'cho')==='khoa'; }
+
+/* Mảng (fs: biến thể · kg: bậc giá) */
+function layDS(ns,khoaTruong,pid,cu){
+  if(khoa(ns))return null;
+  var d=ket(ns,pid);
+  if(d&&d[khoaTruong]&&d[khoaTruong].length)return d[khoaTruong];
+  return (cu&&cu.length)?cu:null;
+}
+/* Phòng: gom 4 trường về một chỗ */
+function layRM(p){
+  if(!p)return null;
+  if(khoa('rm'))return null;
+  var d=ket('rm',p.id);
+  if(d)return { rate:(d.rate||0), min:(d.min==null?60:d.min),
+                openAt:(d.openAt||0), cart:(d.cart||[]) };
+  if(p.rmRate>0||p.rmOpenAt>0)
+    return { rate:(p.rmRate||0), min:(p.rmMin==null?60:p.rmMin),
+             openAt:(p.rmOpenAt||0), cart:(p.rmCart||[]) };
+  return null;
+}
+
+/* ---------- GHI ---------- */
+async function ghi(ns,pid,data){
+  if(!KHO[ns]||!pid)return false;
+  await F.setDoc(F.doc(C.col(KHO[ns]),pid),data,{merge:true});
+  var m=MAP[ns]||(MAP[ns]={});
+  var cu=m[pid]||{}; var moi={};
+  for(var k in cu)if(Object.prototype.hasOwnProperty.call(cu,k))moi[k]=cu[k];
+  for(var k2 in data)if(Object.prototype.hasOwnProperty.call(data,k2))moi[k2]=data[k2];
+  m[pid]=moi;                      /* cập nhật ngay để màn hình không phải chờ */
+  cLuu(ns);
+  return true;
+}
+/* Ghi nhiều sản phẩm một lượt (trừ tồn biến thể sau khi bán) */
+async function ghiLo(ns,ds){
+  if(!KHO[ns]||!ds||!ds.length)return false;
+  var b=F.writeBatch(F.db),n=0;
+  for(var i=0;i<ds.length;i++){
+    if(!ds[i]||!ds[i].id)continue;
+    b.set(F.doc(C.col(KHO[ns]),ds[i].id),ds[i].data,{merge:true}); n++;
+  }
+  if(!n)return false;
+  await b.commit();
+  var m=MAP[ns]||(MAP[ns]={});
+  for(var j=0;j<ds.length;j++){
+    if(!ds[j]||!ds[j].id)continue;
+    var cu=m[ds[j].id]||{},moi={};
+    for(var k in cu)if(Object.prototype.hasOwnProperty.call(cu,k))moi[k]=cu[k];
+    for(var k2 in ds[j].data)if(Object.prototype.hasOwnProperty.call(ds[j].data,k2))moi[k2]=ds[j].data[k2];
+    m[ds[j].id]=moi;
+  }
+  cLuu(ns);
+  return true;
+}
+
+/* ---------- CHUYỂN KÉT (một lần mỗi phiên, mỗi cửa hàng) ----------
+   Ghi sang két TRƯỚC, ghi xong mới dọn chỗ cũ trong products. Dọn = đặt về rỗng
+   chứ không xoá trường, vì bộ lệnh Firestore của app không có deleteField —
+   rỗng thì mọi nơi đọc đều coi như không có, kết quả y hệt. */
+var DON={ fnb:{fnbBom:[]}, fs:{fsVar:[]}, kg:{kgTier:[]}, rm:{rmRate:0,rmMin:60,rmOpenAt:null,rmCart:[]} };
+async function chuyenKet(ns){
+  if(DIXONG[ns]||TT[ns]!=='ok')return;
+  DIXONG[ns]=true;
+  var L=[];
+  try{ L=C.products()||[]; }catch(e){ DIXONG[ns]=false; return; }
+  if(!L.length){                                  /* kho hàng chưa nạp xong — chờ rồi làm lại */
+    DIXONG[ns]=false;
+    if((DEM[ns]=(DEM[ns]||0)+1)<=15) setTimeout(function(){ chuyenKet(ns); },2000);
+    return;
+  }
+  var can=[];
+  for(var i=0;i<L.length;i++){
+    var p=L[i]; if(!p||!p.id)continue;
+    if(ket(ns,p.id))continue;                     /* đã có trong két rồi */
+    if(ns==='fnb'&&p.fnbBom&&p.fnbBom.length)   can.push({id:p.id,data:{b:p.fnbBom}});
+    else if(ns==='fs'&&p.fsVar&&p.fsVar.length) can.push({id:p.id,data:{v:p.fsVar}});
+    else if(ns==='kg'&&p.kgTier&&p.kgTier.length)can.push({id:p.id,data:{t:p.kgTier}});
+    else if(ns==='rm'&&(p.rmRate>0||p.rmOpenAt>0))
+      can.push({id:p.id,data:{rate:(p.rmRate||0),min:(p.rmMin==null?60:p.rmMin),
+                              openAt:(p.rmOpenAt||0),cart:(p.rmCart||[])}});
+  }
+  if(!can.length)return;
+  var lo=can.slice(0,25);                         /* mỗi lượt 25 cái, còn nữa thì lượt sau */
+  try{
+    await ghiLo(ns,lo);
+  }catch(e){ DIXONG[ns]=false; return; }          /* chưa ghi được ⇒ giữ nguyên chỗ cũ, thử lại sau */
+  try{
+    var b=F.writeBatch(F.db);
+    for(var j=0;j<lo.length;j++) b.update(C.doc('products',lo[j].id),DON[ns]);
+    await b.commit();
+  }catch(e2){}                                    /* dọn không được cũng không sao: két đã là nguồn chính */
+  bao(ns);
+  if(can.length>lo.length){ DIXONG[ns]=false; setTimeout(function(){ chuyenKet(ns); },1200); }
+}
+
+window.SKNG={
+  mo:mo, dong:dong,
+  tt:function(ns){ return TT[ns]||'cho'; },
+  khoa:khoa,
+  layDS:layDS, layRM:layRM,
+  ghi:ghi, ghiLo:ghiLo,
+  gan:function(ns,f){ if(typeof f==='function')(CB[ns]=CB[ns]||[]).push(f); },
+  moLai:function(){ for(var ns in KHO)if(UNS[ns])mo(ns); }
+};
+})();
+/* ═══════════════ HẾT: KÉT NGÀNH ═══════════════ */
+
 /* ═══════════ MODULE NGÀNH: F&B — SƠ ĐỒ BÀN + ĐỊNH LƯỢNG NVL ═══════════
    Namespace: fnb    |    Cờ bật: mods.fnb    |    Cần SKMOD v1
    Dữ liệu:  products/{id}.fnbBom = [{id,name,qty}]  (qty NVL cho 1 đơn vị gốc món)
@@ -8904,10 +9118,20 @@ async function saveMgr(){
 }
 
 /* ---------- ĐỊNH LƯỢNG NVL (BOM) ---------- */
+/* [KÉT NGÀNH] Công thức nay nằm ở kho riêng pos_fnb — hết hạn gói sono_fnb là máy
+   chủ chối đọc, hàm này trả null ⇒ bán món không còn tự trừ nguyên liệu nữa. */
+function ketMo(){ try{ if(window.SKNG)window.SKNG.mo('fnb'); }catch(e){} }
+function bom_(p){
+  if(!p)return null;
+  ketMo();
+  try{ if(window.SKNG)return window.SKNG.layDS('fnb','b',p.id,p.fnbBom); }catch(e){}
+  return (p.fnbBom&&p.fnbBom.length)?p.fnbBom:null;
+}
 var BOM=[],BOMPID=null;
 function bomOpen(pid){
   var p=prod(pid);if(!p){C.toast('Lưu sản phẩm trước rồi mở lại để đặt công thức');return;}
-  BOMPID=pid;BOM=JSON.parse(JSON.stringify(p.fnbBom||[]));
+  if(window.SKNG&&window.SKNG.khoa('fnb')){C.toast('🔒 Gói F&B đã hết hạn — gia hạn để dùng định lượng');return;}
+  BOMPID=pid;BOM=JSON.parse(JSON.stringify(bom_(p)||[]));
   var el=document.getElementById('fnb-bom');
   if(!el){el=document.createElement('div');el.id='fnb-bom';el.className='sk-modal';el.innerHTML='<div class="sk-card"></div>';document.getElementById('pos-screen').appendChild(el);}
   el.querySelector('.sk-card').innerHTML='<h3>🧾 Công thức: '+C.esc(p.name)+'</h3>'
@@ -8941,16 +9165,24 @@ async function bomSave(){
   var b=document.getElementById('fnb-bom-list');
   if(b){var qs=b.querySelectorAll('[data-fnb-b]');for(var i=0;i<qs.length;i++){var k=+qs[i].getAttribute('data-fnb-b');BOM[k].qty=parseFloat(qs[i].value)||0;}}
   BOM=BOM.filter(function(x){return x.qty>0;});
-  try{await F.updateDoc(C.doc('products',BOMPID),{fnbBom:BOM});C.closeModal('#fnb-bom');C.toast('✅ Đã lưu công thức');C.dirty();}
+  try{
+    if(window.SKNG){
+      await window.SKNG.ghi('fnb',BOMPID,{b:BOM});
+      try{ await F.updateDoc(C.doc('products',BOMPID),{fnbBom:[]}); }catch(e1){}
+    }else{
+      await F.updateDoc(C.doc('products',BOMPID),{fnbBom:BOM});
+    }
+    C.closeModal('#fnb-bom');C.toast('✅ Đã lưu công thức');C.dirty();
+  }
   catch(e){C.err(e,'Lưu công thức');}
 }
 /* Trừ kho NVL sau khi đơn đã lưu THÀNH CÔNG */
 async function bomDeduct(items){
   var need={},back={};
   (items||[]).forEach(function(it){
-    var p=prod(it.id);if(!p||!p.fnbBom||!p.fnbBom.length)return;
+    var p=prod(it.id),bm=p?bom_(p):null;if(!bm||!bm.length)return;
     back[it.id]=(back[it.id]||0)+(it.baseQty||0);                              /* món chế biến KHÔNG có tồn riêng → cộng trả lại phần lõi vừa trừ */
-    p.fnbBom.forEach(function(g){
+    bm.forEach(function(g){
       var q=(g.qty||0)*(it.baseQty||0);if(q>0)need[g.id]=(need[g.id]||0)+q;
     });
   });
@@ -9009,7 +9241,9 @@ function nghe(){
   }catch(e){console.warn('[fnb] không nghe được bàn',e);}
 }
 M.on('boot',function(){
-  if(ON||!M.flag('fnb'))return;ON=true;
+  if(!M.flag('fnb'))return;
+  ketMo();
+  if(ON)return;ON=true;
   M.tab({id:'fnb',label:'Bàn',title:'Sơ đồ bàn',after:'sell',render:render,
     icon:'<svg viewBox="0 0 24 24"><path d="M3 10h18M5 10V6h14v4M7 10v9M17 10v9"/></svg>',
     body:'<div class="sk-actbar" style="margin-bottom:10px"><button data-act="fnb-mgr">🍽️ Quản lý bàn</button></div><div id="fnb-map"></div>'});
@@ -9030,7 +9264,8 @@ M.on('order:saved',async function(c){
   await bomDeduct(c.items);
   if(CUR){var id=CUR,goc=BASE;CUR=null;BASE='[]';bar();await clearTable(id,goc);}
 });
-M.on('view:show',function(c){if(!M.flag('fnb'))return;nghe();if(c&&c.view==='sell')bar();});
+M.on('view:show',function(c){if(!M.flag('fnb'))return;ketMo();nghe();if(c&&c.view==='sell')bar();});
+M.on('flags:change',function(){ if(M.flag('fnb'))ketMo(); });
 })();
 /* ═══════════ HẾT MODULE fnb ═══════════ */
 
@@ -9047,7 +9282,15 @@ if(!M.reg('fs',{ns:'fs',name:'Thời trang — Biến thể',ver:'1.0',flag:'fs'
 
 var VAR=[],VPID=null;
 function prod(id){var L=C.products();for(var i=0;i<L.length;i++)if(L[i].id===id)return L[i];return null;}
-function vars_(p){return (p&&p.fsVar&&p.fsVar.length)?p.fsVar:null;}
+/* [KÉT NGÀNH] Biến thể nay nằm ở kho riêng pos_fs — hết hạn gói sono_fs là máy chủ
+   chối đọc, hàm này trả null ⇒ mọi nơi coi như sản phẩm không có biến thể. */
+function ketMo(){ try{ if(window.SKNG)window.SKNG.mo('fs'); }catch(e){} }
+function vars_(p){
+  if(!p)return null;
+  ketMo();
+  try{ if(window.SKNG)return window.SKNG.layDS('fs','v',p.id,p.fsVar); }catch(e){}
+  return (p.fsVar&&p.fsVar.length)?p.fsVar:null;
+}
 function inCart(pid,k){var c=C.cart(),n=0;for(var i=0;i<c.length;i++)if(c[i].id===pid&&c[i].unit===k)n+=c[i].qty||0;return n;}
 
 M.css('fs','\
@@ -9084,7 +9327,8 @@ function pick(p){
 /* ---------- MA TRẬN BIẾN THỂ TRONG FORM SP ---------- */
 function mxOpen(pid){
   var p=prod(pid);if(!p){C.toast('Lưu sản phẩm trước rồi mở lại để đặt biến thể');return;}
-  VPID=pid;VAR=JSON.parse(JSON.stringify(p.fsVar||[]));
+  if(window.SKNG&&window.SKNG.khoa('fs')){C.toast('🔒 Gói Thời trang đã hết hạn — gia hạn để dùng biến thể');return;}
+  VPID=pid;VAR=JSON.parse(JSON.stringify(vars_(p)||[]));
   var el=document.getElementById('fs-mx');
   if(!el){el=document.createElement('div');el.id='fs-mx';el.className='sk-modal';el.innerHTML='<div class="sk-card"></div>';document.getElementById('pos-screen').appendChild(el);}
   var ss=[],cs=[];
@@ -9136,7 +9380,13 @@ async function mxSave(){
   mxCollect();
   var tot=0;VAR.forEach(function(v){tot+=(v.stock||0);});
   try{
-    await F.updateDoc(C.doc('products',VPID),VAR.length?{fsVar:VAR,stock:tot}:{fsVar:[]});
+    /* [KÉT NGÀNH] biến thể vào kho riêng; 'products' chỉ còn giữ tồn TỔNG cho báo cáo. */
+    if(window.SKNG){
+      await window.SKNG.ghi('fs',VPID,{v:VAR});
+      try{ await F.updateDoc(C.doc('products',VPID),VAR.length?{fsVar:[],stock:tot}:{fsVar:[]}); }catch(e1){}
+    }else{
+      await F.updateDoc(C.doc('products',VPID),VAR.length?{fsVar:VAR,stock:tot}:{fsVar:[]});
+    }
     C.closeModal('#fs-mx');C.toast('✅ Đã lưu '+VAR.length+' biến thể · tồn tổng '+C.n(tot));C.dirty();
   }catch(e){C.err(e,'Lưu biến thể');}
 }
@@ -9151,13 +9401,19 @@ async function deduct(items){
   });
   var pids=Object.keys(byP);if(!pids.length)return;
   try{
-    var b=F.writeBatch(F.db),n=0;
+    var lo=[];
     pids.forEach(function(pid){
-      var p=prod(pid),vs=JSON.parse(JSON.stringify(p.fsVar||[])),hit=false;
+      var p=prod(pid),vs=JSON.parse(JSON.stringify(vars_(p)||[])),hit=false;
       vs.forEach(function(v){var q=byP[pid][v.k];if(q>0){v.stock=(v.stock||0)-q;hit=true;}});
-      if(hit){b.update(C.doc('products',pid),{fsVar:vs});n++;}
+      if(hit)lo.push({id:pid,data:{v:vs}});
     });
-    if(n)await b.commit();
+    if(!lo.length)return;
+    if(window.SKNG){ await window.SKNG.ghiLo('fs',lo); }
+    else{
+      var b=F.writeBatch(F.db);
+      lo.forEach(function(x){b.update(C.doc('products',x.id),{fsVar:x.data.v});});
+      await b.commit();
+    }
   }catch(e){console.error('[fs] trừ biến thể lỗi',e);C.toast('⚠️ Chưa trừ được tồn biến thể');}
 }
 
@@ -9188,13 +9444,18 @@ M.on('prod:form',function(c){
   var f=document.getElementById('sk-prod');if(!f)return;
   var old=document.getElementById('fs-var-btn');if(old)old.remove();
   var acts=f.querySelector('.sk-card-acts');if(!acts)return;
-  var p=c.id?prod(c.id):null,n=(p&&p.fsVar&&p.fsVar.length)||0;
+  var p=c.id?prod(c.id):null,vv=p?vars_(p):null,n=(vv&&vv.length)||0;
   var b=document.createElement('button');b.id='fs-var-btn';b.className='sk-btn outline';
   b.setAttribute('data-act','fs-var');b.setAttribute('data-id',c.id||'');
   b.textContent=c.id?('👕 Biến thể'+(n?(' ('+n+')'):'')):'👕 Biến thể (lưu SP trước)';
   acts.parentNode.insertBefore(b,acts);
 });
 M.on('order:saved',async function(c){if(M.flag('fs'))await deduct(c.items);});
+/* [KÉT NGÀNH] mở két ngay khi vào Bán hàng và mỗi lần đổi màn — hàm mo() tự bỏ qua
+   nếu két của đúng cửa hàng này đã mở rồi, nên gọi nhiều lần cũng không tốn gì. */
+M.on('boot',function(){ if(M.flag('fs'))ketMo(); });
+M.on('view:show',function(){ if(M.flag('fs'))ketMo(); });
+M.on('flags:change',function(){ if(M.flag('fs'))ketMo(); });
 })();
 /* ═══════════ HẾT MODULE fs ═══════════ */
 
@@ -9212,14 +9473,39 @@ if(!M.reg('rm',{ns:'rm',name:'Phòng tính giờ',ver:'1.0',flag:'rm'}))return;
 
 var ON=false,CUR=null;
 function prod(id){var L=C.products();for(var i=0;i<L.length;i++)if(L[i].id===id)return L[i];return null;}
-function rooms(){return C.products().filter(function(p){return p.rmRate>0;}).sort(function(a,b){return String(a.name).localeCompare(String(b.name),'vi');});}
+/* [KÉT NGÀNH] Giá giờ · phút tối thiểu · giờ mở · đồ gọi thêm nay nằm ở kho riêng
+   pos_rm — hết hạn gói sono_rm là máy chủ chối đọc, RM() trả null ⇒ không còn
+   phòng nào hiện ra, không mở được, không đóng được. Sản phẩm trong kho vẫn nguyên. */
+function ketMo(){ try{ if(window.SKNG)window.SKNG.mo('rm'); }catch(e){} }
+function RM(p){
+  if(!p)return null;
+  ketMo();
+  try{ if(window.SKNG)return window.SKNG.layRM(p); }catch(e){}
+  if(p.rmRate>0||p.rmOpenAt>0)
+    return {rate:(p.rmRate||0),min:(p.rmMin==null?60:p.rmMin),openAt:(p.rmOpenAt||0),cart:(p.rmCart||[])};
+  return null;
+}
+async function ghiRM(id,o){
+  if(window.SKNG)return window.SKNG.ghi('rm',id,o);
+  var c={};
+  if('rate' in o)c.rmRate=o.rate;
+  if('min' in o)c.rmMin=o.min;
+  if('openAt' in o)c.rmOpenAt=o.openAt;
+  if('cart' in o)c.rmCart=o.cart;
+  return F.updateDoc(C.doc('products',id),c);
+}
+function rooms(){
+  ketMo();
+  return C.products().filter(function(p){var r=RM(p);return !!(r&&r.rate>0);})
+                     .sort(function(a,b){return String(a.name).localeCompare(String(b.name),'vi');});
+}
 function mins(a){return Math.max(0,Math.floor((Date.now()-a)/60000));}
 function hhmm(m){var h=Math.floor(m/60);return h?(h+'g'+(m%60?(' '+(m%60)+'p'):'')):(m+'p');}
-/* Tính tiền: làm tròn LÊN theo block 15 phút, không dưới rmMin */
-function charge(p,m){
-  var use=Math.max(m,p.rmMin||0);
+/* Tính tiền: làm tròn LÊN theo block 15 phút, không dưới số phút tối thiểu */
+function charge(r,m){
+  var use=Math.max(m,(r&&r.min)||0);
   var blocks=Math.ceil(use/15);
-  return {mins:use,money:Math.round(blocks*15/60*(p.rmRate||0))};
+  return {mins:use,money:Math.round(blocks*15/60*((r&&r.rate)||0))};
 }
 
 M.css('rm','\
@@ -9243,32 +9529,35 @@ function render(){
   var L=rooms();
   if(!L.length){box.innerHTML='<div class="sk-empty">Chưa có phòng. Bấm 🛏️ Quản lý phòng để thêm.</div>';return;}
   box.innerHTML='<div class="rm-grid">'+L.map(function(p){
-    var on=p.rmOpenAt>0,m=on?mins(p.rmOpenAt):0;
+    var r=RM(p)||{},on=r.openAt>0,m=on?mins(r.openAt):0;
     return '<button class="rm-c'+(on?' on':'')+'" data-act="rm-tap" data-id="'+p.id+'">'
       +'<b>'+C.esc(p.name)+'</b>'
-      +'<span>'+(on?('⏱ '+hhmm(m)):('Trống · '+C.fmt(p.rmRate||0)+'/giờ'))+'</span>'
-      +(on?('<span>'+C.fmt(charge(p,m).money)+'</span>'):'')+'</button>';
+      +'<span>'+(on?('⏱ '+hhmm(m)):('Trống · '+C.fmt(r.rate||0)+'/giờ'))+'</span>'
+      +(on?('<span>'+C.fmt(charge(r,m).money)+'</span>'):'')+'</button>';
   }).join('')+'</div>';
 }
 
 /* ---------- MỞ / ĐÓNG PHÒNG ---------- */
 function tap(id){
   var p=prod(id);if(!p)return;
-  if(!(p.rmOpenAt>0)){
-    if(!confirm('Mở phòng "'+p.name+'"?\nGiá '+C.fmt(p.rmRate||0)+'/giờ'))return;
-    F.updateDoc(C.doc('products',id),{rmOpenAt:Date.now(),rmCart:[]}).then(function(){C.toast('▶️ Đã mở '+p.name);render();})['catch'](function(e){C.err(e,'Mở phòng');});
+  var r=RM(p);
+  if(!r){C.toast('🔒 Gói Phòng tính giờ đã hết hạn — gia hạn để mở phòng');return;}
+  if(!(r.openAt>0)){
+    if(!confirm('Mở phòng "'+p.name+'"?\nGiá '+C.fmt(r.rate||0)+'/giờ'))return;
+    ghiRM(id,{openAt:Date.now(),cart:[]}).then(function(){C.toast('▶️ Đã mở '+p.name);render();})['catch'](function(e){C.err(e,'Mở phòng');});
     return;
   }
   sheet(p);
 }
 function sheet(p){
-  var m=mins(p.rmOpenAt),ch=charge(p,m);
-  var extra=p.rmCart||[],ex=0;extra.forEach(function(i){ex+=(i.price||0)*(i.qty||0);});
+  var r=RM(p);if(!r)return;
+  var m=mins(r.openAt),ch=charge(r,m);
+  var extra=r.cart||[],ex=0;extra.forEach(function(i){ex+=(i.price||0)*(i.qty||0);});
   var el=document.getElementById('rm-sheet');
   if(!el){el=document.createElement('div');el.id='rm-sheet';el.className='sk-modal';el.innerHTML='<div class="sk-card"></div>';document.getElementById('pos-screen').appendChild(el);}
   el.querySelector('.sk-card').innerHTML='<h3>🛏️ '+C.esc(p.name)+'</h3>'
     +'<div class="rm-bill">'
-      +'<div class="r"><span>Vào lúc</span><span>'+new Date(p.rmOpenAt).toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'})+'</span></div>'
+      +'<div class="r"><span>Vào lúc</span><span>'+new Date(r.openAt).toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'})+'</span></div>'
       +'<div class="r"><span>Đã dùng</span><span>'+hhmm(m)+(ch.mins>m?(' → tính '+hhmm(ch.mins)):'')+'</span></div>'
       +'<div class="r"><span>Tiền phòng</span><span>'+C.fmt(ch.money)+'</span></div>'
       +(ex?('<div class="r"><span>Đồ gọi thêm ('+extra.length+')</span><span>'+C.fmt(ex)+'</span></div>'):'')
@@ -9282,15 +9571,16 @@ function sheet(p){
 }
 function more(id){
   var p=prod(id);if(!p)return;
+  var r=RM(p);if(!r)return;
   CUR=id;C.closeModal('#rm-sheet');
-  C.setCart(JSON.parse(JSON.stringify(p.rmCart||[])));
+  C.setCart(JSON.parse(JSON.stringify(r.cart||[])));
   M.go('sell');C.toast('Chọn đồ cho '+p.name+', xong bấm 💾 Giữ phòng');
   bar();
 }
 async function keep(){
   if(!CUR)return;
   var c=C.cart();
-  try{await F.updateDoc(C.doc('products',CUR),{rmCart:JSON.parse(JSON.stringify(c))});}
+  try{await ghiRM(CUR,{cart:JSON.parse(JSON.stringify(c))});}
   catch(e){C.err(e,'Giữ phòng');return;}
   C.setCart([]);CUR=null;bar();M.go('rm');C.toast('✅ Đã lưu đồ gọi thêm');
 }
@@ -9303,11 +9593,12 @@ function bar(){
   b.innerHTML='🛏️ Đang gọi cho: '+C.esc(p.name)+'<button data-act="rm-keep">💾 Giữ phòng</button>';
 }
 function closeRoom(id){
-  var p=prod(id);if(!p||!(p.rmOpenAt>0))return;
-  var m=mins(p.rmOpenAt),ch=charge(p,m);
+  var p=prod(id);if(!p)return;
+  var r=RM(p);if(!r||!(r.openAt>0))return;
+  var m=mins(r.openAt),ch=charge(r,m);
   if(C.cart().length&&!confirm('Giỏ đang có hàng chưa thanh toán.\nĐóng phòng sẽ THAY giỏ hiện tại. Tiếp tục?'))return;
   C.closeModal('#rm-sheet');
-  var lines=JSON.parse(JSON.stringify(p.rmCart||[]));
+  var lines=JSON.parse(JSON.stringify(r.cart||[]));
   lines.unshift({key:p.id+'|giờ',id:p.id,name:p.name,unit:hhmm(ch.mins),ratio:0,
                  price:ch.money,cost:0,qty:1,baseQty:0});
   CUR=null;bar();
@@ -9316,7 +9607,7 @@ function closeRoom(id){
 }
 async function cancelRoom(id){
   if(!confirm('Huỷ mở phòng? Toàn bộ đồ đã gọi cũng bị xoá.'))return;
-  try{await F.updateDoc(C.doc('products',id),{rmOpenAt:null,rmCart:[]});C.closeModal('#rm-sheet');render();C.toast('Đã huỷ');}
+  try{await ghiRM(id,{openAt:0,cart:[]});C.closeModal('#rm-sheet');render();C.toast('Đã huỷ');}
   catch(e){C.err(e,'Huỷ phòng');}
 }
 
@@ -9329,9 +9620,10 @@ function mgr(){
     +'<div class="sk-mut" style="font-size:12px;margin-bottom:8px">Phòng được lưu như một sản phẩm dịch vụ, nên vẫn vào báo cáo doanh thu bình thường.</div>'
     +'<div id="rm-mgr-list" style="max-height:46vh;overflow-y:auto">'
     +(L.length?L.map(function(p){
+        var r=RM(p)||{};
         return '<div class="rm-row"><input class="nm" value="'+C.esc(p.name)+'" data-rm-n="'+p.id+'">'
-          +'<input class="rt" inputmode="numeric" value="'+(p.rmRate||0)+'" data-rm-r="'+p.id+'" placeholder="đ/giờ">'
-          +'<input class="rt" inputmode="numeric" value="'+(p.rmMin==null?60:p.rmMin)+'" data-rm-m="'+p.id+'" placeholder="phút TT" title="Số phút tính tiền tối thiểu" style="max-width:70px"></div>';
+          +'<input class="rt" inputmode="numeric" value="'+(r.rate||0)+'" data-rm-r="'+p.id+'" placeholder="đ/giờ">'
+          +'<input class="rt" inputmode="numeric" value="'+(r.min==null?60:r.min)+'" data-rm-m="'+p.id+'" placeholder="phút TT" title="Số phút tính tiền tối thiểu" style="max-width:70px"></div>';
       }).join(''):'<div class="sk-mut" style="padding:10px 0">Chưa có phòng.</div>')
     +'</div>'
     +'<button class="sk-btn green wide" data-act="rm-add" style="margin-top:10px">➕ Thêm phòng</button>'
@@ -9343,10 +9635,14 @@ function addRoom(){
     var n=String(v||'').trim();if(!n)return;
     C.num('Giá mỗi giờ của "'+n+'"',0,async function(r){
       if(!(r>0)){C.toast('Giá phải lớn hơn 0');return;}
+      if(window.SKNG&&window.SKNG.khoa('rm')){C.toast('🔒 Gói Phòng tính giờ đã hết hạn — gia hạn để thêm phòng');return;}
       try{
-        await F.addDoc(C.col('products'),{name:n,category:'Phòng',baseUnit:'giờ',cost:0,price:r,stock:0,minStock:0,
-          rmRate:r,rmMin:60,rmOpenAt:null,rmCart:[],createdAt:F.serverTimestamp()});
-        C.toast('✅ Đã thêm '+n);C.closeModal('#rm-mgr');
+        /* Sản phẩm phòng vẫn nằm ở kho chung (để vào báo cáo doanh thu như cũ),
+           còn giá giờ / phút tối thiểu thì cất trong két ngành. */
+        var ref=await F.addDoc(C.col('products'),{name:n,category:'Phòng',baseUnit:'giờ',cost:0,price:r,stock:0,minStock:0,
+          rmRate:0,rmMin:60,rmOpenAt:null,rmCart:[],createdAt:F.serverTimestamp()});
+        await ghiRM(ref.id,{rate:r,min:60,openAt:0,cart:[]});
+        C.toast('✅ Đã thêm '+n);C.closeModal('#rm-mgr');render();
       }catch(e){C.err(e,'Thêm phòng');}
     });
   },{text:true});
@@ -9358,10 +9654,14 @@ async function mgrSave(){
     var id=ns[i].getAttribute('data-rm-n'),nm=ns[i].value.trim();
     var ri=b.querySelector('[data-rm-r="'+id+'"]'),rt=ri?(parseFloat(ri.value)||0):0;
     var mi=b.querySelector('[data-rm-m="'+id+'"]'),mn=mi?parseFloat(mi.value):NaN;
-    var p=prod(id);
-    if(!(mn>=0))mn=(p&&p.rmMin!=null)?p.rmMin:60;                              /* để trống / gõ sai → giữ nguyên mức cũ */
-    if(p&&nm&&rt>0&&(p.name!==nm||p.rmRate!==rt||(p.rmMin==null?60:p.rmMin)!==mn)){
-      try{await F.updateDoc(C.doc('products',id),{name:nm,rmRate:rt,price:rt,rmMin:mn});k++;}catch(e){}
+    var p=prod(id),r0=p?(RM(p)||{}):{};
+    if(!(mn>=0))mn=(r0.min==null?60:r0.min);                                   /* để trống / gõ sai → giữ nguyên mức cũ */
+    if(p&&nm&&rt>0&&(p.name!==nm||(r0.rate||0)!==rt||(r0.min==null?60:r0.min)!==mn)){
+      try{
+        await ghiRM(id,{rate:rt,min:mn});
+        if(p.name!==nm||p.price!==rt){ try{await F.updateDoc(C.doc('products',id),{name:nm,price:rt});}catch(e2){} }
+        k++;
+      }catch(e){}
     }
   }
   C.closeModal('#rm-mgr');if(k)C.toast('✅ Đã lưu '+k+' phòng');
@@ -9380,7 +9680,9 @@ M.act('rm-add',function(){addRoom();});
 
 /* ---------- GẮN VÀO LÕI ---------- */
 M.on('boot',function(){
-  if(ON||!M.flag('rm'))return;ON=true;
+  if(!M.flag('rm'))return;
+  ketMo();
+  if(ON)return;ON=true;
   M.tab({id:'rm',label:'Phòng',title:'Phòng tính giờ',after:'sell',render:render,
     icon:'<svg viewBox="0 0 24 24"><path d="M3 18v-6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6M3 18h18M5 10V7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3"/></svg>',
     body:'<div class="sk-actbar" style="margin-bottom:10px"><button data-act="rm-mgr">🛏️ Quản lý phòng</button></div><div id="rm-map"></div>'});
@@ -9397,11 +9699,15 @@ M.on('sell:render',function(c){
 M.on('order:saved',async function(c){
   if(!M.flag('rm'))return;
   var ids=[];
-  (c.items||[]).forEach(function(it){var p=prod(it.id);if(p&&p.rmRate>0&&p.rmOpenAt>0&&ids.indexOf(it.id)<0)ids.push(it.id);});
-  for(var i=0;i<ids.length;i++){try{await F.updateDoc(C.doc('products',ids[i]),{rmOpenAt:null,rmCart:[]});}catch(e){}}
+  (c.items||[]).forEach(function(it){var p=prod(it.id),r=p?RM(p):null;
+    if(r&&r.rate>0&&r.openAt>0&&ids.indexOf(it.id)<0)ids.push(it.id);});
+  for(var i=0;i<ids.length;i++){try{await ghiRM(ids[i],{openAt:0,cart:[]});}catch(e){}}
   if(ids.length)render();
 });
-M.on('view:show',function(c){if(M.flag('rm')&&c.view==='sell')bar();});
+M.on('view:show',function(c){if(!M.flag('rm'))return;ketMo();if(c.view==='sell')bar();});
+M.on('flags:change',function(){ if(M.flag('rm'))ketMo(); });
+/* Két mở/đóng hoặc vừa chuyển xong ⇒ vẽ lại lưới phòng cho khớp */
+try{ if(window.SKNG)window.SKNG.gan('rm',function(){ try{render();}catch(e){} }); }catch(e){}
 })();
 /* ═══════════ HẾT MODULE rm ═══════════ */
 
@@ -9418,9 +9724,17 @@ if(!M.reg('kg',{ns:'kg',name:'Cân ký & Giá bậc',ver:'1.0',flag:'kg'}))retur
 
 var T=[],TPID=null;
 function prod(id){var L=C.products();for(var i=0;i<L.length;i++)if(L[i].id===id)return L[i];return null;}
+/* [KÉT NGÀNH] Bậc giá nay nằm ở kho riêng pos_kg — hết hạn gói sono_kg là máy chủ
+   chối đọc, hàm này trả null ⇒ giỏ hàng quay về giá bán thường, không còn bậc. */
+function ketMo(){ try{ if(window.SKNG)window.SKNG.mo('kg'); }catch(e){} }
 function tiers(p){
-  if(!p||!p.kgTier||!p.kgTier.length)return null;
-  return p.kgTier.slice().sort(function(a,b){return (a.min||0)-(b.min||0);});
+  if(!p)return null;
+  ketMo();
+  var ds=null;
+  try{ if(window.SKNG)ds=window.SKNG.layDS('kg','t',p.id,p.kgTier); }catch(e){ ds=null; }
+  if(!window.SKNG)ds=(p.kgTier&&p.kgTier.length)?p.kgTier:null;
+  if(!ds||!ds.length)return null;
+  return ds.slice().sort(function(a,b){return (a.min||0)-(b.min||0);});
 }
 /* Giá áp dụng cho số lượng q: bậc CAO NHẤT mà q >= min */
 function priceFor(p,q,base){
@@ -9440,6 +9754,7 @@ M.css('kg','\
 /* ---------- ÁP GIÁ BẬC MỖI LẦN GIỎ ĐỔI ---------- */
 M.on('cart:render',function(c){
   if(!M.flag('kg'))return;
+  ketMo();
   var tot={};
   c.cart.forEach(function(i){tot[i.id]=(tot[i.id]||0)+(i.baseQty!=null?i.baseQty:(i.qty||0));});   /* bậc tính theo ĐƠN VỊ GỐC — đúng như dòng mô tả "mua từ N <đơn vị gốc>" */
   c.cart.forEach(function(i){
@@ -9457,6 +9772,7 @@ M.on('cart:render',function(c){
 /* ---------- BẢNG BẬC GIÁ TRONG FORM SP ---------- */
 function open_(pid){
   var p=prod(pid);if(!p){C.toast('Lưu sản phẩm trước rồi mở lại để đặt bậc giá');return;}
+  if(window.SKNG&&window.SKNG.khoa('kg')){C.toast('🔒 Gói Cân ký đã hết hạn — gia hạn để dùng bậc giá');return;}
   TPID=pid;T=JSON.parse(JSON.stringify(tiers(p)||[]));
   var el=document.getElementById('kg-tier');
   if(!el){el=document.createElement('div');el.id='kg-tier';el.className='sk-modal';el.innerHTML='<div class="sk-card"></div>';document.getElementById('pos-screen').appendChild(el);}
@@ -9494,7 +9810,13 @@ async function save(){
   collect();
   T=T.filter(function(x){return x.min>0&&x.price>0;}).sort(function(a,b){return a.min-b.min;});
   try{
-    await F.updateDoc(C.doc('products',TPID),{kgTier:T});
+    /* [KÉT NGÀNH] bậc giá vào kho riêng; chỗ cũ trong 'products' dọn về rỗng. */
+    if(window.SKNG){
+      await window.SKNG.ghi('kg',TPID,{t:T});
+      try{ await F.updateDoc(C.doc('products',TPID),{kgTier:[]}); }catch(e1){}
+    }else{
+      await F.updateDoc(C.doc('products',TPID),{kgTier:T});
+    }
     C.closeModal('#kg-tier');C.toast('✅ Đã lưu '+T.length+' bậc giá');C.dirty();C.renderCart();
   }catch(e){C.err(e,'Lưu bậc giá');}
 }
@@ -9512,7 +9834,7 @@ M.on('prod:form',function(c){
   var f=document.getElementById('sk-prod');if(!f)return;
   var old=document.getElementById('kg-tier-btn');if(old)old.remove();
   var acts=f.querySelector('.sk-card-acts');if(!acts)return;
-  var p=c.id?prod(c.id):null,n=(p&&p.kgTier&&p.kgTier.length)||0;
+  var p=c.id?prod(c.id):null,tt=p?tiers(p):null,n=(tt&&tt.length)||0;
   var b=document.createElement('button');b.id='kg-tier-btn';b.className='sk-btn outline';
   b.setAttribute('data-act','kg-tier');b.setAttribute('data-id',c.id||'');
   b.textContent=c.id?('⚖️ Bậc giá'+(n?(' ('+n+')'):'')):'⚖️ Bậc giá (lưu SP trước)';
@@ -9528,6 +9850,10 @@ M.on('sell:render',function(c){
     if(n&&n.innerHTML.indexOf('kg-tag')<0)n.innerHTML+='<span class="kg-tag">⚖️ bậc</span>';
   });
 });
+/* [KÉT NGÀNH] mở két ngay khi vào Bán hàng — gọi nhiều lần không tốn gì. */
+M.on('boot',function(){ if(M.flag('kg'))ketMo(); });
+M.on('view:show',function(){ if(M.flag('kg'))ketMo(); });
+M.on('flags:change',function(){ if(M.flag('kg'))ketMo(); });
 })();
 /* ═══════════ HẾT MODULE kg ═══════════ */
 
@@ -16229,7 +16555,10 @@ function forecast(){
   var T0=today0();
   for(var i=0;i<S.P.length;i++){
     var p=S.P[i]; if(!p||p.id==null) continue;
-    if(p.rmRate>0||(p.fnbBom&&p.fnbBom.length)) continue;   /* phòng tính giờ & món chế biến không có tồn thật → không nhắc nhập hàng */
+    var _ngR=(p.rmRate>0), _ngB=!!(p.fnbBom&&p.fnbBom.length);   /* [KÉT NGÀNH] hỏi thêm kho riêng, vì chỗ cũ đã dọn rỗng */
+    try{ if(window.SKNG){ var _r=window.SKNG.layRM(p); if(_r&&_r.rate>0)_ngR=true;
+                          var _b=window.SKNG.layDS('fnb','b',p.id,null); if(_b&&_b.length)_ngB=true; } }catch(_e){}
+    if(_ngR||_ngB) continue;   /* phòng tính giờ & món chế biến không có tồn thật → không nhắc nhập hàng */
     var s=S.S[p.id];
     var stock=num(p.stock);
     var avg=s?s.avg:0, sd=s?s.sd:0;
@@ -17329,7 +17658,13 @@ window.AIB={ hoi:function(t){ try{ M.go('aib'); }catch(e){} setTimeout(function(
     try{ if(typeof window.toast==='function') window.toast(m); }catch(e){}
   }
   function uid(){ var s=SK(); try{ return s?s.core.uid():null; }catch(e){ return null; } }
-  function laAdmin(){ try{ var b=document.getElementById('admin-btn'); return !!(b&&b.style&&b.style.display!=='none'); }catch(e){ return false; } }
+  /* [VÁ] TRƯỚC: nhận diện admin bằng cách xem nút #admin-btn có hiện không —
+     mở DevTools cho nút đó hiện lên là licOf() trả "vĩnh viễn" cho MỌI gói ngành.
+     NAY: hỏi đúng tài khoản đang đăng nhập; không có thì mới lùi về cách cũ. */
+  function laAdmin(){
+    try{ if(typeof window.snLaAdmin==='function') return !!window.snLaAdmin(); }catch(e){}
+    try{ var b=document.getElementById('admin-btn'); return !!(b&&b.style&&b.style.display!=='none'); }catch(e){ return false; }
+  }
   function laChu(){
     try{ if(document.body && document.body.classList.contains('la-nv')) return false; }catch(e){}
     try{ var p=document.getElementById('pos-screen');
