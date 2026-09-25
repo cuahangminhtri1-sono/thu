@@ -768,7 +768,7 @@ import { getFirestore, initializeFirestore, persistentLocalCache, persistentMult
 import { getStorage, ref as _sref, uploadBytes, getDownloadURL, deleteObject, listAll }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
 
-const APP_BUILD = "2026-09-25-QT6"; // ⬆️ ĐỔI MỖI LẦN DEPLOY (đặt TRÙNG tên cache trong sw.js) — hiện ở ⚙️ Cài đặt để biết máy đã chạy bản mới chưa
+const APP_BUILD = "2026-09-25-QT8"; // ⬆️ ĐỔI MỖI LẦN DEPLOY (đặt TRÙNG tên cache trong sw.js) — hiện ở ⚙️ Cài đặt để biết máy đã chạy bản mới chưa
 const firebaseConfig = {
   apiKey: "AIzaSyA_kjQ-CdASRkf50Glz3kQajlkD5qGWC4k",
   authDomain: "so-no-cc57a.firebaseapp.com",
@@ -1698,6 +1698,10 @@ window.doForgot=async()=>{
   }
 };
 window.doLogout=async()=>{if(!confirm('🔒 Bạn có chắc muốn đăng xuất?'))return;if(unsub)unsub();await signOut(auth);};
+/* [QT7] Lệnh "Buộc đăng xuất mọi máy" từ app Quản trị (khối NHẬN LỆNH cuối file gọi 2 hàm này):
+   biết phiên này đăng nhập lúc nào + đăng xuất KHÔNG hỏi lại. Không đổi gì của nút Đăng xuất cũ. */
+window.snPhienDangNhapMs=async()=>{try{const u=auth.currentUser;if(!u)return 0;const r=await u.getIdTokenResult();const t=Date.parse((r&&r.authTime)||'');return isNaN(t)?0:t;}catch(e){return 0;}};
+window.snDangXuatNgay=async()=>{try{if(unsub)unsub();}catch(e){}await signOut(auth);};
 window.doRegister=async()=>{
   const email=document.getElementById('email-input').value.trim();
   const pass=document.getElementById('pass-input').value;
@@ -1707,7 +1711,7 @@ window.doRegister=async()=>{
   if(pass.length<6){err.textContent='Mật khẩu cần ít nhất 6 ký tự.';return;}
   try{
     const cred=await createUserWithEmailAndPassword(auth,email,pass);
-    try{await setDoc(doc(db,'signups',cred.user.uid),{email:email,app:'sono',createdAt:serverTimestamp()},{merge:true});}catch(e){}
+    try{await setDoc(doc(db,'signups',cred.user.uid),{email:email,app:'sono',createdAt:serverTimestamp(),dev:snMaMay()},{merge:true});}catch(e){}
     // Đăng ký xong sẽ tự đăng nhập -> hiện màn hình "chờ kích hoạt"
   }catch(e){
     let m='Đăng ký không thành công.';
@@ -1936,18 +1940,44 @@ async function tryStartTrial(uid){
       await setDoc(doc(db,'accounts',uid),{email:(auth.currentUser&&auth.currentUser.email)||'',createdAt:serverTimestamp()});
     }
   }catch(e){/* đã có rồi thì bỏ qua */}
+  /* [QT7] MỖI MÁY CHỈ DÙNG THỬ 1 TÀI KHOẢN — chặn đổi email ăn dùng thử trên cùng điện thoại.
+     Máy đã có tài khoản CHỦ SHOP khác đăng nhập ⇒ tài khoản mới không tự mở dùng thử (vẫn mua gói được).
+     Công tắc billing/config.thu1May — app Quản trị tắt được. Máy nhân viên không bao giờ bị tính. */
+  window.__snThuLyDo='';
+  if(snMayDaCoTaiKhoanKhac(uid)){
+    let _chan=true;
+    try{ const _c=await getDoc(doc(db,'billing','config')); _chan=!(_c.exists()&&(_c.data()||{}).thu1May===false); }catch(_){ _chan=true; }
+    if(_chan){ window.__snThuLyDo='may'; return false; }
+  }
   // ② Giấy phép dùng thử RIÊNG app này. Rules chỉ cho TẠO 1 lần (không update, không delete)
   //    ⇒ xoá đi tạo lại để thử vô hạn là bất khả thi.
   try{
     const until=new Date(Date.now()+TRIAL_DAYS*86400000);
     await setDoc(licRef(uid,MA_APP),{trial:true,trialUsed:true,active:true,paidUntil:until,startedAt:serverTimestamp()});
     return true;
-  }catch(e){console.error('tryStartTrial',e);return false;}
+  }catch(e){console.error('tryStartTrial',e);
+    if(/\+[^@]*@/.test((auth.currentUser&&auth.currentUser.email)||''))window.__snThuLyDo='bidanh';   /* [QT7] Rules chặn email bí danh */
+    return false;}
+}
+/* [QT7] Mã máy + "máy này đã có tài khoản chủ shop khác chưa" — dùng CHUNG bộ nhớ rmt_dev_v1 với khối
+   NHẬN LỆNH cuối file (khối đó ghi danh sách tài khoản chủ shop từng đăng nhập trên máy này). */
+function snMaMay(){
+  try{ const o=JSON.parse(localStorage.getItem('rmt_dev_v1')||'{}')||{};
+       if(typeof o.id!=='string'||!/^[a-z0-9]{8,40}$/.test(o.id)){
+         o.id=(Date.now().toString(36)+Math.random().toString(36).slice(2,12)).replace(/[^a-z0-9]/g,'').slice(0,40);
+         localStorage.setItem('rmt_dev_v1',JSON.stringify(o)); }
+       return o.id; }catch(e){ return ''; }
+}
+function snMayDaCoTaiKhoanKhac(uid){
+  try{ const o=JSON.parse(localStorage.getItem('rmt_dev_v1')||'{}')||{};
+       return Array.isArray(o.uids)&&o.uids.some(function(x){ return typeof x==='string'&&x&&x!==uid; }); }catch(e){ return false; }
 }
 window.startTrialNow=async()=>{
   if(!auth.currentUser)return;
   const ok=await tryStartTrial(auth.currentUser.uid);
   if(ok){location.reload();}
+  else if(window.__snThuLyDo==='may'){ alert('📱 Điện thoại này đã có tài khoản Sổ Nợ khác.\n\nMỗi máy chỉ được dùng thử 1 lần. Hãy đăng nhập lại tài khoản cũ để dùng tiếp, hoặc gọi '+snHotTxt()+' để mua gói cho tài khoản này.'); }
+  else if(window.__snThuLyDo==='bidanh'){ alert('✉️ Email có dấu "+" (email bí danh) không mở được dùng thử.\n\nHãy đăng ký bằng email thường, hoặc gọi '+snHotTxt()+' để mua gói.'); }
   else{toast('❌ Chưa mở được dùng thử. Hãy tải lại trang.');}
 };
 
@@ -4948,6 +4978,7 @@ async function skDelBranch(){if(!skBrEditId)return;if(skBranches.length<=1){toas
    admin cấp/duyệt bằng app quản trị. KHÔNG đụng Firestore rules.
    Grandfather: chi nhánh đã có TRƯỚC khi bật thu phí (meta/cn.base) không bị khoá. */
 let skMaxCn = 1, skCnQty = 0, skCnBase = 0, skCnInfo = null, skCnLoaded = false;
+let skCnCho = [];   /* [QT7] cửa hàng mã cũ app Quản trị đã duyệt (accounts/{uid}.cnCho) — máy chủ cho mở thì app cũng cho */
 let _cnWantQty = 1, _cnWantMonths = 1;
 function _cnMs(ts){ if(!ts)return 0; if(typeof ts==='number')return ts; if(ts.toMillis)return ts.toMillis(); if(ts.seconds!=null)return ts.seconds*1000; var d=ts.toDate?ts.toDate():new Date(ts); return isNaN(d)?0:d.getTime(); }
 function _cnLic(d){
@@ -4994,6 +5025,7 @@ function skAllowedBranchIds(){
 }
 function skBranchAllowed(id){
   if(!skCnLoaded||id==='main'||!id)return true;
+  if(skCnCho.indexOf(id)>-1)return true;   /* [QT7] mã cũ app Quản trị đã duyệt — máy chủ cho mở */
   var k=skNganhBr(id); if(k===null)return true;
   var cur=skNganhBr(skBranch);
   if(cur!==null&&k!==cur)return true;   /* khác ngành: hạn mức của ngành đó xét khi mở ngành đó */
@@ -5047,7 +5079,10 @@ async function docLuatCnMayChu(){
   try{ const s=await getDoc(doc(db,'billing','config')); c=s.exists()?(s.data()||{}):{}; }catch(e){ return null; }
   try{ const s2=await getDoc(doc(db,'accounts',UID)); a=s2.exists()?(s2.data()||{}):{}; }catch(e){ a={}; }
   const ms=v=>{ try{ if(!v)return 0; if(typeof v.toMillis==='function')return v.toMillis(); const d=(v&&v.toDate)?v.toDate():new Date(v); return isNaN(d)?0:d.getTime(); }catch(e){ return 0; } };
-  return { batCn:c.enforceCn===true, cnChung:c.cnChung!==false, mienTru:a.cnMienTru===true, anHan:ms(a.cnAnHanDen)>Date.now() };
+  /* [QT8] Khớp Rules VÁ LỖ Z2: billing/config thiếu ô enforceCn = máy chủ ĐANG thu phí chi nhánh;
+     thiếu ô cnChung = suất 'sono_cn' KHÔNG tính cho cửa hàng ngành khác. Chỉ ghi rõ false / true mới nới. */
+  return { batCn:c.enforceCn!==false, cnChung:c.cnChung===true, mienTru:a.cnMienTru===true, anHan:ms(a.cnAnHanDen)>Date.now(),
+           cho:(Array.isArray(a.cnCho)?a.cnCho.filter(function(x){return typeof x==='string';}):[]) };
 }
 async function skLoadCn(){
   try{ if(typeof isAdmin==='function'&&isAdmin()){ skCnInfo={ok:true,admin:true}; skCnQty=99999; skCnBase=99999; skMaxCn=99999; try{skRenderBranchSel();}catch(e){} return; } }catch(e){}
@@ -5061,6 +5096,7 @@ async function skLoadCn(){
   else       skCnInfo=_A||_B||skCnInfo||{ok:false,qty:0};
   /* [QT6] Máy chủ TẮT gói chi nhánh chung (cnChung) ⇒ suất 'sono_cn' không còn tính cho cửa hàng ngành */
   var _srv=null; try{ _srv=await docLuatCnMayChu(); }catch(e){ _srv=null; }
+  if(_srv) skCnCho=Array.isArray(_srv.cho)?_srv.cho:[];   /* [QT7] */
   if(_srv&&_srv.cnChung===false&&skCnMa!==MA_CN) skCnInfo=_A||{ok:false,qty:0};
   var qty=(skCnInfo&&skCnInfo.qty)||0, ok=!!(skCnInfo&&skCnInfo.ok);
   /* Grandfather: đọc/ghi 1 lần số chi nhánh THÊM đã có trước khi bật thu phí */
@@ -19439,10 +19475,11 @@ if (window.__RMT_READY__) return; window.__RMT_READY__ = true;
 try{
 
 /* ĐỔI CHUỖI NÀY CHO TRÙNG APP_BUILD MỖI LẦN DEPLOY (chỉ để hiện ở bảng quản trị) */
-var BUILD = '2026-09-25-QT6';
+var BUILD = '2026-09-25-QT8';
 var NHIP   = 6*3600*1000;          /* báo về tối đa 6 giờ 1 lần — khỏi tốn lượt ghi */
-var KEY_HB = 'rmt_hb_v1';
+var KEY_HB = 'rmt_hb_v2';          /* [QT7] nhịp báo về tính RIÊNG từng tài khoản (bản v1 tính chung cả máy) */
 var KEY_XEM= 'rmt_xem_v1';
+var KEY_DEV= 'rmt_dev_v1';         /* [QT7] mã máy + các tài khoản chủ shop từng đăng nhập trên máy này */
 
 function SK(){ return window.SKMOD||null; }
 function FB(){ var s=SK(); return (s&&s.fb)||null; }
@@ -19513,11 +19550,27 @@ function hop(text, onOk){
   }, false);
 }
 
+/* ───────── [QT7] MÃ MÁY — nhận ra MỘT máy mở nhiều tài khoản (lập nick ăn dùng thử) ─────────
+   Mã ngẫu nhiên sinh 1 lần, nằm trong bộ nhớ trình duyệt, kèm danh sách tài khoản CHỦ SHOP từng
+   đăng nhập trên máy này (tối đa 12). Máy nhân viên không ghi. Không đụng dữ liệu bán hàng. */
+function thietBi(u){
+  var o=LS(KEY_DEV);
+  if (typeof o.id!=='string' || !/^[a-z0-9]{8,40}$/.test(o.id)){
+    o.id=(Date.now().toString(36)+Math.random().toString(36).slice(2,12)).replace(/[^a-z0-9]/g,'').slice(0,40);
+  }
+  var ds=Array.isArray(o.uids)?o.uids.filter(function(x){ return typeof x==='string' && x && x.length<=128; }):[];
+  var nv=false; try{ nv=!!(document.body && document.body.classList.contains('la-nv')); }catch(e){}
+  if (u && !nv){ var i=ds.indexOf(u); if (i>=0) ds.splice(i,1); ds.push(u); }
+  if (ds.length>12) ds=ds.slice(ds.length-12);
+  o.uids=ds; LSet(KEY_DEV,o);
+  return { id:o.id, khac:ds.filter(function(x){ return x!==u; }).slice(-11) };
+}
+
 /* ───────── BÁO VỀ: máy đang chạy bản nào ───────── */
 async function baoVe(u){
   var f=FB(); if (!f||!u) return;
-  var old=LS(KEY_HB), b=ban();
-  if (old.t && old.b===b && (Date.now()-Number(old.t)) < NHIP) return;   /* chưa tới nhịp */
+  var tb=thietBi(u), all=LS(KEY_HB), old=all[u]||{}, b=ban();
+  if (old.t && old.b===b && old.d===tb.id && (Date.now()-Number(old.t)) < NHIP) return;   /* chưa tới nhịp */
   var lm='';
   try{
     var r=await fetch(location.href, { method:'HEAD', cache:'no-store' });
@@ -19526,9 +19579,30 @@ async function baoVe(u){
   try{
     await f.setDoc(f.doc(f.db,'users',u,'meta','app'),
       { build:b, lastMod:String(lm).slice(0,60), at:f.serverTimestamp(), atMs:Date.now(),
-        ua:String(navigator.userAgent||'').slice(0,180), pwa:daCai() }, { merge:true });
-    LSet(KEY_HB,{ t:Date.now(), b:b });
+        ua:String(navigator.userAgent||'').slice(0,180), pwa:daCai(), dev:tb.id, devUids:tb.khac }, { merge:true });
+    all=LS(KEY_HB); all[u]={ t:Date.now(), b:b, d:tb.id }; LSet(KEY_HB,all);
   }catch(e){}   /* hết hạn / mất mạng thì thôi, tuyệt đối không làm phiền khách */
+}
+
+/* ───────── [QT7] BUỘC ĐĂNG XUẤT MỌI MÁY (lộ mật khẩu · mất máy · nghi dùng chung tài khoản) ─────────
+   Chỉ đăng xuất phiên đăng nhập TRƯỚC lúc chủ phần mềm ra lệnh ⇒ đăng nhập lại là dùng tiếp,
+   lệnh cũ không bao giờ đá ra lần hai. Không rõ giờ đăng nhập ⇒ không làm gì (không đá oan). */
+var _dx=false;
+function msOf(v){
+  try{ if (!v) return 0; if (typeof v.toMillis==='function') return v.toMillis();
+       if (typeof v.seconds==='number') return v.seconds*1000;
+       var d=new Date(v); return isNaN(d.getTime())?0:d.getTime(); }catch(e){ return 0; }
+}
+async function dangXuatNeuCu(lo){
+  if (_dx) return;
+  var luc=msOf(lo.at); if (!luc) return;
+  if (typeof window.snPhienDangNhapMs!=='function' || typeof window.snDangXuatNgay!=='function') return;
+  var phien=0; try{ phien=await window.snPhienDangNhapMs(); }catch(e){ phien=0; }
+  if (!phien || phien>=luc || _dx) return;
+  _dx=true;
+  try{ alert('🔐 Chủ phần mềm yêu cầu đăng nhập lại trên máy này.\n\nBấm OK rồi đăng nhập bằng email + mật khẩu của bạn. Dữ liệu vẫn còn nguyên.'); }catch(e){}
+  try{ await window.snDangXuatNgay(); }catch(e){}
+  try{ location.reload(); }catch(e){}
 }
 
 /* ───────── NGHE LỆNH TỪ BẢNG QUẢN TRỊ ───────── */
@@ -19539,6 +19613,9 @@ function nghe(u){
       try{
         var x=(d && d.exists && d.exists()) ? (d.data()||{}) : {};
         var r=x.remote||{}, xem=LS(KEY_XEM);
+
+        /* 0) [QT7] buộc đăng xuất — chỉ phiên đăng nhập TRƯỚC lúc chủ phần mềm ra lệnh */
+        if (r.logout && r.logout.id && r.logout.at) dangXuatNeuCu(r.logout);
 
         /* 1) thanh cập nhật — ưu tiên cao nhất */
         if (r.reload && r.reload.id && xem.rl!==r.reload.id){
