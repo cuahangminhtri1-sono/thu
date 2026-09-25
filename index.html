@@ -433,17 +433,23 @@
 
 <!-- ADMIN: Quản lý khách -->
 <div id="admin-view" style="display:none;min-height:100vh;background:#f4f6f8;">
+  <!-- [QT6] Bảng 👑 chỉ còn để XEM: ẩn mọi nút GHI (chốt chặn thật nằm trong từng hàm) -->
+  <style>
+    #admin-list button[onclick^="adminGrant"],#admin-list button[onclick^="adminActivate"],#admin-list button[onclick^="adminLock"],
+    #admin-list button[onclick^="adminUnlock"],#admin-list button[onclick^="adminDismiss"],#admin-list button[onclick^="skAdminPos"],
+    #admin-list button[onclick^="ngaAdmCap"],#admin-list button[onclick^="ngaAdmTat"],#admin-list button[onclick^="ngaAdmLuuGia"]{display:none!important}
+    #admin-list [id^="ngp-"]{pointer-events:none;background:#f3f5f7}
+  </style>
   <header style="background:#1a6b3c;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;">
     <button onclick="closeAdmin()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:.95em;cursor:pointer">← Quay lại</button>
     <h1 style="margin:0;font-size:1.15em">👑 Quản lý khách</h1>
   </header>
   <div style="padding:14px;max-width:640px;margin:0 auto">
     <div style="background:#eef4ff;border:1px solid #bcd0ff;border-radius:12px;padding:12px 14px;font-size:.9em;color:#1d4ed8;margin-bottom:12px">
-      Khách đăng ký xong sẽ hiện ở đây. Bấm nút thời hạn (<b>30 / 180 / 360 ngày</b> hoặc <b>vĩnh viễn</b>) để cho khách dùng; bấm <b>Khoá</b> để chặn.
+      👑 Bảng này nay <b>chỉ để XEM</b>. Duyệt đơn, gia hạn, khoá / mở khoá, đặt giá, tài khoản nhận tiền: làm trong <b>app Quản trị (Sổ doanh thu)</b> — một nơi duy nhất, chống duyệt trùng một khoản tiền.
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
       <button onclick="loadAdminList()" style="background:#fff;border:1px solid #e4e8ec;border-radius:8px;padding:8px 12px;font-size:.88em;cursor:pointer">🔄 Tải lại danh sách</button>
-      <button onclick="openBilling()" style="background:#1a6b3c;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:.88em;font-weight:600;cursor:pointer">💳 Cấu hình nhận tiền & giá</button>
       <button onclick="loadRevenue()" style="background:#0a5f4a;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:.88em;font-weight:600;cursor:pointer">💰 Doanh thu</button>
     </div>
     <div id="admin-list"><div style="padding:20px;text-align:center;color:#888">Đang tải...</div></div>
@@ -762,7 +768,7 @@ import { getFirestore, initializeFirestore, persistentLocalCache, persistentMult
 import { getStorage, ref as _sref, uploadBytes, getDownloadURL, deleteObject, listAll }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
 
-const APP_BUILD = "2026-09-25-TROLY3"; // ⬆️ ĐỔI MỖI LẦN DEPLOY (đặt TRÙNG tên cache trong sw.js) — hiện ở ⚙️ Cài đặt để biết máy đã chạy bản mới chưa
+const APP_BUILD = "2026-09-25-QT6"; // ⬆️ ĐỔI MỖI LẦN DEPLOY (đặt TRÙNG tên cache trong sw.js) — hiện ở ⚙️ Cài đặt để biết máy đã chạy bản mới chưa
 const firebaseConfig = {
   apiKey: "AIzaSyA_kjQ-CdASRkf50Glz3kQajlkD5qGWC4k",
   authDomain: "so-no-cc57a.firebaseapp.com",
@@ -1064,7 +1070,14 @@ function _pendingFor(uid,app){for(var i=0;i<_REQS.length;i++){var q=_REQS[i];
   if(q.uid===uid&&(q.app===app||(q.app===''&&app===MA_APP)))return q.reqId;}return '';}
 async function markReqDone(reqId){ if(!reqId)return;
   try{ await _SET(_DOC('renewalRequests',reqId),{status:'done',ngStatus:'done',handledAt:_SRV(),ck:null},{merge:true}); }catch(e){} }
+/* [QT6] BẢNG 👑 TRONG APP NÀY CHỈ CÒN ĐỂ XEM — mọi việc GHI (duyệt, gia hạn, khoá, giá, tài khoản
+   nhận tiền) làm ở app Quản trị (Sổ doanh thu): MỘT nơi duy nhất, duyệt bằng transaction chống trùng.
+   Lỗ cũ ở đây: duyệt không kiểm đơn đã duyệt chưa ⇒ cộng hạn 2 lần cho 1 khoản tiền; ghi sổ theo giá
+   chung (bỏ qua giá riêng của khách); "Cấu hình nhận tiền" ghi đè pricePerMonth = giá DỰ PHÒNG của
+   Cafe / NhàXe / Xe HĐ ⇒ đổi giá app khác ngầm. Hàm vẫn giữ tên để nút cũ không báo lỗi. */
+window.snQtChiXem=function(){ try{ toast('👑 Bảng này chỉ để XEM. Duyệt đơn, gia hạn, khoá, đặt giá: dùng app Quản trị (Sổ doanh thu).'); }catch(e){} return true; };
 window.adminGrantApp=async function(uid,months,app,reqId){
+  if(window.snQtChiXem())return;
   if(_admBusy)return; _admBusy=true;
   try{
     months=Math.floor(Number(months)); if(!(months>=1&&months<=24))months=1;   /* [VÁ QT4] bản cũ ép mọi số tháng lạ về 1 */
@@ -1094,6 +1107,7 @@ window.adminGrantApp=async function(uid,months,app,reqId){
   finally{ _admBusy=false; }
 };
 window.adminUnlockApp=async function(uid,app){
+  if(window.snQtChiXem())return;
   if(_admBusy)return; _admBusy=true;
   try{ app=APP_IDS.indexOf(app)>-1?app:MA_APP;
     var snap=await _GET(licRef(uid,app)); var d=snap.exists()?snap.data():null;
@@ -1163,6 +1177,7 @@ window.loadAdminList=async function(){
   }catch(e){console.error(e);box.innerHTML='<div style="padding:20px;color:#c0392b">Lỗi tải danh sách ['+_ec(e)+']'+_permHint(e)+'</div>';}
 };
 window.adminActivate=async function(uid,days){
+  if(window.snQtChiXem())return;
   if(_admBusy)return;
   if(!days){ if(!(await _ask('Cấp VĨNH VIỄN cho khách này? (không còn hạn sử dụng)')))return; }
   _admBusy=true;
@@ -1181,6 +1196,7 @@ window.adminActivate=async function(uid,days){
   finally{_admBusy=false;}
 };
 window.adminLock=async function(uid){
+  if(window.snQtChiXem())return;
   if(_admBusy)return;
   if(!(await _ask('Khoá tài khoản '+( _EMAILS[uid]||uid )+' ở '+APP_TEN[MA_APP]+'?')))return;
   _admBusy=true;
@@ -1191,6 +1207,7 @@ window.adminLock=async function(uid){
 window.adminGrantMonths=function(uid,months){ return window.adminGrantApp(uid,months,MA_APP,''); };
 window.adminGrant=window.adminGrantMonths;
 window.adminDismissReq=async function(reqId){
+  if(window.snQtChiXem())return;
   try{ await _SET(_DOC('renewalRequests',reqId),{status:'done',ngStatus:'done',handledAt:_SRV(),ck:null},{merge:true}); toast('✅ Đã ẩn yêu cầu'); window.loadAdminList(); }
   catch(e){console.error(e);toast('❌ Không ẩn được ['+_ec(e)+']'+_permHint(e));}
 };
@@ -2264,6 +2281,7 @@ window.openBilling=async()=>{
   document.getElementById('modal-billing').classList.add('active');
 };
 window.saveBilling=async()=>{
+  if(window.snQtChiXem())return;
   const sel=document.getElementById('bl-bank');
   const bin=sel.value;
   const bankName=(sel.options[sel.selectedIndex]?sel.options[sel.selectedIndex].text:'').replace(/^--.*--$/,'').trim();
@@ -5022,6 +5040,15 @@ function skKiemGoiNganh(){
   }catch(e){}
 }
 function skCnUpsellNg(k,fromSwitch){ skCnNgXin=(k===undefined)?null:k; try{ skCnMa=maCnCuaNganh(k); }catch(e){} skCnUpsell(fromSwitch); }
+/* [QT6] Đọc LUẬT MÁY CHỦ ĐANG CHẠY cho chi nhánh: công tắc billing/config + miễn trừ / ân hạn app Quản trị
+   cấp ở accounts/{uid}. Không đọc được (mất mạng) ⇒ null ⇒ giữ nguyên cách tính cũ, không chặn oan ai. */
+async function docLuatCnMayChu(){
+  let c=null,a={};
+  try{ const s=await getDoc(doc(db,'billing','config')); c=s.exists()?(s.data()||{}):{}; }catch(e){ return null; }
+  try{ const s2=await getDoc(doc(db,'accounts',UID)); a=s2.exists()?(s2.data()||{}):{}; }catch(e){ a={}; }
+  const ms=v=>{ try{ if(!v)return 0; if(typeof v.toMillis==='function')return v.toMillis(); const d=(v&&v.toDate)?v.toDate():new Date(v); return isNaN(d)?0:d.getTime(); }catch(e){ return 0; } };
+  return { batCn:c.enforceCn===true, cnChung:c.cnChung!==false, mienTru:a.cnMienTru===true, anHan:ms(a.cnAnHanDen)>Date.now() };
+}
 async function skLoadCn(){
   try{ if(typeof isAdmin==='function'&&isAdmin()){ skCnInfo={ok:true,admin:true}; skCnQty=99999; skCnBase=99999; skMaxCn=99999; try{skRenderBranchSel();}catch(e){} return; } }catch(e){}
   skCnMa = await docMaCnTheoNganh();
@@ -5032,6 +5059,9 @@ async function skLoadCn(){
   if(skCnMa!==MA_CN){ try{ var L2=await getDoc(licRef(UID,MA_CN)); if(L2&&L2.exists())_B=_cnLic(L2.data()); }catch(e){} }
   if(_A&&_B) skCnInfo=(_A.ok&&_B.ok)?((_B.qty>_A.qty)?_B:_A):(_A.ok?_A:(_B.ok?_B:_A));
   else       skCnInfo=_A||_B||skCnInfo||{ok:false,qty:0};
+  /* [QT6] Máy chủ TẮT gói chi nhánh chung (cnChung) ⇒ suất 'sono_cn' không còn tính cho cửa hàng ngành */
+  var _srv=null; try{ _srv=await docLuatCnMayChu(); }catch(e){ _srv=null; }
+  if(_srv&&_srv.cnChung===false&&skCnMa!==MA_CN) skCnInfo=_A||{ok:false,qty:0};
   var qty=(skCnInfo&&skCnInfo.qty)||0, ok=!!(skCnInfo&&skCnInfo.ok);
   /* Grandfather: đọc/ghi 1 lần số chi nhánh THÊM đã có trước khi bật thu phí */
   var base=null;
@@ -5042,7 +5072,11 @@ async function skLoadCn(){
     catch(e){ base=Math.max(0,(skBranches.length||1)-1); }   /* lỗi mạng: tạm tính, KHÔNG ghi → lần sau ghi */
   }
   skCnBase=base; skCnQty=qty;
-  skMaxCn=Math.max(1+base, 1+(ok?qty:0));
+  /* [QT6] Máy chủ ĐANG THU PHÍ chi nhánh thì "suất biếu" meta/cn.base hết tác dụng (Rules không đọc ô đó):
+     giữ nó là app vẫn mở cửa hàng mà máy chủ đã chặn ⇒ khách gặp lỗi quyền khó hiểu thay vì màn mua.
+     Miễn trừ / ân hạn do app Quản trị cấp ⇒ máy chủ cho hết ⇒ app cũng cho hết. */
+  if(_srv&&_srv.batCn) skMaxCn=(_srv.mienTru||_srv.anHan)?99999:(1+(ok?qty:0));
+  else skMaxCn=Math.max(1+base, 1+(ok?qty:0));
   skCnLoaded=true;
   try{
     if(!skBranchAllowed(skBranch)){ var _ngC=skNganhBr(skBranch); skBranch='main'; skBrNho('main'); var _ngM=skNganhBr('main');
@@ -5819,6 +5853,7 @@ async function skDiag(){
     box.insertAdjacentHTML('beforeend',h);
   };
   window.skAdminPos=async function(uid,months){
+    if(window.snQtChiXem())return;
     try{
       var data={trial:false,trialUsed:true,active:true,updatedAt:serverTimestamp()};
       if(months>0){
@@ -5841,8 +5876,8 @@ async function skDiag(){
       toast('✅ Đã mở POS '+(months>0?('+'+months+' tháng'):'vĩnh viễn')); window.loadAdminList();
     }catch(e){console.error(e);toast('❌ Không mở được ['+_ec(e)+']'+_permHint(e));}
   };
-  window.skAdminPosOff=async function(uid){ try{ await setDoc(licRef(uid,MA_POS),{active:false,updatedAt:serverTimestamp()},{merge:true}); toast('🔒 Đã tắt POS'); window.loadAdminList(); }catch(e){console.error(e);toast('❌ Không tắt được ['+_ec(e)+']'+_permHint(e));} };
-  window.skAdminPosDismiss=async function(uid){ try{ await setDoc(doc(db,'accounts',uid),{posRequested:false},{merge:true}); try{ await markReqDone(_pendingFor(uid,MA_POS)); }catch(e2){} toast('✅ Đã ẩn'); window.loadAdminList(); }catch(e){console.error(e);toast('❌ Lỗi');} };
+  window.skAdminPosOff=async function(uid){ if(window.snQtChiXem())return; try{ await setDoc(licRef(uid,MA_POS),{active:false,updatedAt:serverTimestamp()},{merge:true}); toast('🔒 Đã tắt POS'); window.loadAdminList(); }catch(e){console.error(e);toast('❌ Không tắt được ['+_ec(e)+']'+_permHint(e));} };
+  window.skAdminPosDismiss=async function(uid){ if(window.snQtChiXem())return; try{ await setDoc(doc(db,'accounts',uid),{posRequested:false},{merge:true}); try{ await markReqDone(_pendingFor(uid,MA_POS)); }catch(e2){} toast('✅ Đã ẩn'); window.loadAdminList(); }catch(e){console.error(e);toast('❌ Lỗi');} };
 })();
 
 
@@ -8959,6 +8994,7 @@ var API={
     cart:function(){return skCart;},
     totals:function(){return skCartTotals();},
     uid:function(){return (typeof UID!=='undefined')?UID:null;},
+    cnMa:function(){return (typeof skCnMa!=='undefined')?skCnMa:null;},   /* [QT6] mã gói chi nhánh màn mua đang bán */
     branch:function(){return (typeof skBranch!=='undefined')?skBranch:null;},
     staff:function(){return (typeof skStaff!=='undefined')?skStaff:null;},
     col:bcol,doc:bdoc,
@@ -18820,6 +18856,8 @@ window.AIB={ hoi:function(t){ try{ M.go('aib'); }catch(e){} setTimeout(function(
   var OPENKEY='nga_open_pos_v1';
   var real=null, installed=false, bypass=false, busy=false, ready=false, pre=false, mask=null, msg='';
   var LIC={}, PRICE={}, BANK=null, loading=false, GR=null;
+  var ANHAN=0;   /* [QT6] accounts/{uid}.ngAnHanDen — ân hạn gói ngành (mili-giây) */
+  function _msNg(v){ try{ if(!v)return 0; if(typeof v.toMillis==='function')return v.toMillis(); var d=(v&&v.toDate)?v.toDate():new Date(v); return isNaN(d)?0:d.getTime(); }catch(e){ return 0; } }
   var upK='', upM=1;
 
   function SK(){ return window.SKMOD||null; }
@@ -18866,7 +18904,11 @@ window.AIB={ hoi:function(t){ try{ M.go('aib'); }catch(e){} setTimeout(function(
     /* [VÁ F5] không ngày + không vinhVien: Rules chặn két ngành — không được báo là vĩnh viễn */
     return {has:true,ok:false,trialUsed:tu,nohan:(d.active===true)};
   }
-  function licOf(k){ if(laAdmin()) return {has:true,ok:true,forever:true,admin:true}; return LIC[k]||{has:false,ok:false,trialUsed:false}; }
+  function licOf(k){ if(laAdmin()) return {has:true,ok:true,forever:true,admin:true};
+    var i=LIC[k]||{has:false,ok:false,trialUsed:false};
+    /* [QT6] ÂN HẠN gói ngành (app Quản trị cấp khi bật thu phí): máy chủ cho dùng tới hạn chót ⇒ app cũng cho */
+    if(!i.ok && ANHAN>Date.now()) return {has:true,ok:true,anHan:true,until:new Date(ANHAN),trialUsed:!!i.trialUsed};
+    return i; }
   function conNgay(i){ if(!i||!i.until) return 0; return Math.max(0,Math.ceil((i.until.getTime()-Date.now())/86400000)); }
 
   async function loadAll(){
@@ -18880,7 +18922,7 @@ window.AIB={ hoi:function(t){ try{ M.go('aib'); }catch(e){} setTimeout(function(
                  f.getDoc(f.doc(f.db,'accounts',u)).catch(function(){return null;}) ];
       MODS.forEach(function(m){ jobs.push(f.getDoc(f.doc(f.db,'accounts',u,'lic',m.lic)).catch(function(){return null;})); });
       var r=await Promise.all(jobs);
-      try{ if(r[1]&&r[1].exists&&r[1].exists()){ var ac=r[1].data()||{}; if(ac.email) window.__ngaEmail=ac.email;
+      try{ if(r[1]&&r[1].exists&&r[1].exists()){ var ac=r[1].data()||{}; if(ac.email) window.__ngaEmail=ac.email; ANHAN=_msNg(ac.ngAnHanDen);
              GR=(ac.giaRieng&&typeof ac.giaRieng==='object'&&!Array.isArray(ac.giaRieng))?ac.giaRieng:null; } }catch(e){}
       if(r[0]&&r[0].exists&&r[0].exists()){
         var b=r[0].data()||{}; PRICE=b;
@@ -18972,6 +19014,7 @@ window.AIB={ hoi:function(t){ try{ M.go('aib'); }catch(e){} setTimeout(function(
     var i=licOf(k), gia=priceOf(k);
     if(i.admin) return '<span class="nga-tag ok">👑 ADMIN — mở sẵn</span>';
     if(i.ok&&i.forever) return '<span class="nga-tag '+(isCur?'ok':'paid')+'">'+(isCur?'✓ ĐANG DÙNG · ':'✅ ĐÃ MUA · ')+'không thời hạn</span>';
+    if(i.ok&&i.anHan)   return '<span class="nga-tag trial">⏳ ÂN HẠN MIỄN PHÍ tới '+dstr(i.until)+' — mua để dùng tiếp</span>';
     if(i.ok&&i.trial)   return '<span class="nga-tag trial">🎁 DÙNG THỬ — còn '+conNgay(i)+' ngày'+(isCur?' · đang dùng':'')+'</span>';
     if(i.ok)            return '<span class="nga-tag '+(isCur?'ok':'paid')+'">'+(isCur?'✓ ĐANG DÙNG · ':'✅ ĐÃ MUA · ')+'còn '+conNgay(i)+' ngày</span>';
     if(i.off)           return '<span class="nga-tag bad">🔒 ĐÃ TẮT — liên hệ chủ phần mềm</span>';
@@ -19255,6 +19298,7 @@ window.AIB={ hoi:function(t){ try{ M.go('aib'); }catch(e){} setTimeout(function(
     return out;
   }
   window.ngaAdmCap=async function(u,lic,months){
+    if(typeof window.snQtChiXem==='function'&&window.snQtChiXem())return;
     var f=FB(); if(!f) return;
     var m=null; MODS.forEach(function(x){ if(x.lic===lic) m=x; }); if(!m) return;
     try{
@@ -19275,12 +19319,14 @@ window.AIB={ hoi:function(t){ try{ M.go('aib'); }catch(e){} setTimeout(function(
     }catch(e){ say('❌ Không mở được ['+String((e&&e.code)||e)+']'); }
   };
   window.ngaAdmTat=async function(u,lic){
+    if(typeof window.snQtChiXem==='function'&&window.snQtChiXem())return;
     var f=FB(); if(!f) return;
     try{ await f.setDoc(f.doc(f.db,'accounts',u,'lic',lic),{active:false,updatedAt:f.serverTimestamp()},{merge:true});
          say('🔒 Đã tắt gói'); admRefresh(); }
     catch(e){ say('❌ Không tắt được'); }
   };
   window.ngaAdmLuuGia=async function(){
+    if(typeof window.snQtChiXem==='function'&&window.snQtChiXem())return;
     var f=FB(); if(!f) return;
     var o={}; var bad=false;
     MODS.forEach(function(m){ var el=document.getElementById('ngp-'+m.k); var v=el?parseInt(el.value,10):0; o[m.pf]=(v>0?v:0); });
@@ -19393,7 +19439,7 @@ if (window.__RMT_READY__) return; window.__RMT_READY__ = true;
 try{
 
 /* ĐỔI CHUỖI NÀY CHO TRÙNG APP_BUILD MỖI LẦN DEPLOY (chỉ để hiện ở bảng quản trị) */
-var BUILD = '2026-09-25-TROLY3';
+var BUILD = '2026-09-25-QT6';
 var NHIP   = 6*3600*1000;          /* báo về tối đa 6 giờ 1 lần — khỏi tốn lượt ghi */
 var KEY_HB = 'rmt_hb_v1';
 var KEY_XEM= 'rmt_xem_v1';
@@ -19581,10 +19627,18 @@ async function moThuCn(el){
   if (navigator.onLine===false) return;          /* offline: lệnh ghi treo vĩnh viễn — không mở */
   dangMo=true;
   try{
-    var ma='sono_cn';
-    try{ var FL=(SK()&&SK().flags)?SK().flags():{};
-         var MP={fnb:'sono_cn_fnb',fs:'sono_cn_fs',rm:'sono_cn_rm',kg:'sono_cn_kg'};
-         for(var k in MP) if(FL[k]===true){ ma=MP[k]; break; } }catch(e){}
+    /* [QT6] Chọn ĐÚNG gói chi nhánh của ngành đang mua. Bản cũ đọc cờ mods đời cũ nên ở cửa hàng
+       F&B / Thời trang… (ngành nay gắn theo từng cửa hàng) lại mở thử nhầm 'sono_cn'. */
+    var ma='sono_cn', daBiet=false;
+    var MP={fnb:'sono_cn_fnb',fs:'sono_cn_fs',rm:'sono_cn_rm',kg:'sono_cn_kg'};
+    var HOP={sono_cn:1,sono_cn_fnb:1,sono_cn_fs:1,sono_cn_rm:1,sono_cn_kg:1};
+    try{ var cm=(SK()&&SK().core&&typeof SK().core.cnMa==='function')?SK().core.cnMa():null;
+         if(cm&&HOP[cm]){ ma=cm; daBiet=true; } }catch(e){}
+    if(!daBiet){ try{ var br=String((SK()&&SK().core&&typeof SK().core.branch==='function')?(SK().core.branch()||''):'');
+         var mm=/^main_(fnb|fs|rm|kg)$/.exec(br)||/^cn_(fnb|fs|rm|kg)_[0-9]+$/.exec(br);
+         if(mm){ ma=MP[mm[1]]; daBiet=true; } else if(br==='main'||/^cn_[0-9]+$/.test(br)){ ma='sono_cn'; daBiet=true; } }catch(e){} }
+    if(!daBiet){ try{ var FL=(SK()&&SK().flags)?SK().flags():{};
+         for(var k in MP) if(FL[k]===true){ ma=MP[k]; break; } }catch(e){} }
     var ref=f.doc(f.db,'accounts',u,'lic',ma);
     var d=await f.getDoc(ref);
     /* ĐÃ có giấy phép (đang dùng thử / đã mua / đã hết hạn) ⇒ để nguyên màn MUA, không mở lại */
